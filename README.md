@@ -57,6 +57,7 @@ data/            ETTh1, ETTh2, ETTm1, ETTm2（公開データ。出典: zhouhaoy
 src/ett_poc/     data.py（読込・分割）, features.py, evaluate.py, models.py
 scripts/         run_eda.py, run_baselines.py, run_lgbm.py, make_figures.py
 reports/         数表（自動生成）・図・スライド
+docs/            スライドの骨子（slides_outline.md）
 ```
 
 ## 限界と次のステップ
