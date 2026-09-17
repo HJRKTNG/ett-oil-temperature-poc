@@ -1,0 +1,17 @@
+dataset,features,n_features,split,MAE,RMSE
+ETTh1,1_ot_only,23,valid,1.445,1.886
+ETTh1,1_ot_only,23,test,1.522,1.903
+ETTh1,2_+calendar,28,valid,1.27,1.756
+ETTh1,2_+calendar,28,test,1.125,1.506
+ETTh1,3_+load_origin (B),46,valid,1.235,1.712
+ETTh1,3_+load_origin (B),46,test,1.109,1.49
+ETTh1,4_+load_target (A),52,valid,1.224,1.686
+ETTh1,4_+load_target (A),52,test,1.085,1.45
+ETTh2,1_ot_only,23,valid,2.253,3.113
+ETTh2,1_ot_only,23,test,2.675,3.7
+ETTh2,2_+calendar,28,valid,1.737,2.528
+ETTh2,2_+calendar,28,test,1.827,2.577
+ETTh2,3_+load_origin (B),46,valid,1.781,2.546
+ETTh2,3_+load_origin (B),46,test,1.95,2.727
+ETTh2,4_+load_target (A),52,valid,1.741,2.462
+ETTh2,4_+load_target (A),52,test,1.968,2.733
