@@ -41,7 +41,8 @@ def state_metrics(y_true: pd.Series, y_pred: pd.Series, threshold: float, steps_
 
 
 def onset_metrics(
-    ot_origin: pd.Series, y_true: pd.Series, y_pred: pd.Series, threshold: float, steps_per_day: int
+    ot_origin: pd.Series, y_true: pd.Series, y_pred: pd.Series, threshold: float, steps_per_day: int,
+    horizon: pd.Timedelta = pd.Timedelta(0),
 ) -> dict[str, float]:
     """高温になる前の検知。
 
@@ -73,8 +74,9 @@ def onset_metrics(
         if hit.any():
             detected += 1
             first = hit[hit].index[0]
-            # 先行時間 = 対象時刻(=起点+h)ベースの行なので、警報が出た行の位置 → イベント開始までの差
-            lead_times.append(float((start - first) / pd.Timedelta(hours=1)))
+            # 行は起点 s で並ぶ。イベント開始行 start は「OT[start+h] が最初に閾値を超える」起点。
+            # 初回警報の起点 first から、実際の超過時刻 start+h までが先行時間。
+            lead_times.append(float((start + horizon - first) / pd.Timedelta(hours=1)))
     notices = _runs(alarm_rows)
     false_notices = sum(1 for a, b in notices if not actual.loc[a:b].any())
     return {

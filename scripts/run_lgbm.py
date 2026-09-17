@@ -42,7 +42,7 @@ def metrics_row(name, h, label, part, ya, pred, ot_now, mask, thresholds, sph, e
            "MAE": round(m["MAE"], 3), "RMSE": round(m["RMSE"], 3), "n": m["n"]}
     for q, thr in thresholds.items():
         st = state_metrics(ya[mask], pred[mask], thr, 24 * sph)
-        on = onset_metrics(ot_now[mask], ya[mask], pred[mask], thr, 24 * sph)
+        on = onset_metrics(ot_now[mask], ya[mask], pred[mask], thr, 24 * sph, pd.Timedelta(hours=h))
         row.update({
             f"q{q}_events": st["events"], f"q{q}_recall": round(st["recall"], 3),
             f"q{q}_onset_events": on["events_with_onset"], f"q{q}_onset_recall": round(on["event_recall"], 3),

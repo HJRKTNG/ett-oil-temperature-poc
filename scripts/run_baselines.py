@@ -28,7 +28,7 @@ def evaluate_all(name, h, sph, split, Xa, ya, preds, thresholds, rows):
                    "MAE": round(m["MAE"], 3), "RMSE": round(m["RMSE"], 3), "n": m["n"]}
             for q, thr in thresholds.items():
                 st = state_metrics(ya[mask], p[mask], thr, 24 * sph)
-                on = onset_metrics(Xa.loc[mask, "ot_now"], ya[mask], p[mask], thr, 24 * sph)
+                on = onset_metrics(Xa.loc[mask, "ot_now"], ya[mask], p[mask], thr, 24 * sph, pd.Timedelta(hours=h))
                 row.update({
                     f"q{q}_events": st["events"], f"q{q}_recall": round(st["recall"], 3),
                     f"q{q}_onset_events": on["events_with_onset"], f"q{q}_onset_recall": round(on["event_recall"], 3),
