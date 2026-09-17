@@ -1,7 +1,7 @@
 # ETT 油温予測 PoC — 変圧器の予防保全に向けた先読みの技術検証
 
 電力用変圧器の油温（OT）を数時間先まで予測し、「高温になる前に知らせる」ことがどの程度できるかを、公開ベンチマーク ETT で検証した PoC です。
-クライアント向けの報告スライドは `reports/slides/` に置きます（PDF）。
+クライアント向けの報告スライドは `reports/slides/ett_oil_temperature_poc.pdf`（生成元 pptx も同梱。`scripts/build_slides.js` で再生成、文章は `docs/slides_text.md`）。
 
 ## 結論（テスト期間 2017-11 〜 2018-06、起点までの観測だけを使う条件 B）
 
@@ -57,7 +57,7 @@ data/            ETTh1, ETTh2, ETTm1, ETTm2（公開データ。出典: zhouhaoy
 src/ett_poc/     data.py（読込・分割）, features.py, evaluate.py, models.py
 scripts/         run_eda.py, run_baselines.py, run_lgbm.py, make_figures.py
 reports/         数表（自動生成）・図・スライド
-docs/            スライドの骨子（slides_outline.md）
+docs/            スライドの骨子（slides_outline.md）と文章の控え（slides_text.md）
 ```
 
 ## 限界と次のステップ
