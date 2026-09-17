@@ -55,11 +55,18 @@ class Split:
     def masks_by_target(
         self, origin_index: pd.DatetimeIndex, horizon: pd.Timedelta
     ) -> tuple[pd.Series, pd.Series, pd.Series]:
-        """起点 s の行に対し、対象時刻 T = s + h がどの期間に入るかで分ける。"""
-        target = pd.Series(origin_index + horizon, index=origin_index)
+        """起点 s の行を学習・検証・テストに分ける。
+
+        - 学習: 対象時刻 T = s + h が学習終了前（ラベルが検証期間に食い込まない）。
+        - 検証・テスト: 対象時刻 T がその期間に入り、**かつ起点 s もその期間に入る**行だけ。
+          起点が前の期間にある行（各境界の先頭 h 時間）は、その起点の時点ではまだ
+          前期間のラベルを使ってモデルを確定できていないので、評価から外す。
+        """
+        origin = pd.Series(origin_index, index=origin_index)
+        target = origin + horizon
         train = target < self.train_end
-        valid = (target >= self.train_end) & (target < self.valid_end)
-        test = target >= self.valid_end
+        valid = (origin >= self.train_end) & (target < self.valid_end)
+        test = origin >= self.valid_end
         return train, valid, test
 
     def masks(self, index: pd.DatetimeIndex) -> tuple[pd.Series, pd.Series, pd.Series]:

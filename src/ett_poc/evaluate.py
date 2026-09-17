@@ -47,10 +47,13 @@ def onset_metrics(
     """高温になる前の検知。
 
     - 対象: 起点 s で OT[s] <= 閾値、かつ対象 T で OT[T] > 閾値 の行（onset 行）。
-    - イベント: 実際の超過区間（連続超過を 1 つ）のうち、その開始前 h 以内に onset 行を持つもの。
-      イベント検知 = そのイベントの onset 行のどれかで警報（予測 > 閾値）が出た。
-    - 通知: 起点 s で閾値以下のときに出た警報を、連続分を 1 つにまとめて数える。
-      通知のうち、対象 T が実際に超えていないものを誤通知とする。
+    - 区間: 実際の超過区間（連続超過を 1 つ）のうち onset 行を持つもの（`events_with_onset`）。
+      区間の検知 = その区間の onset 行のどれかで警報（予測 > 閾値）が出た。
+    - 先行時間 `mean_lead_h` = **検知できた区間の、最初に的中した予測の起点 s から、
+      実際の超過時刻 (区間開始 + h) まで**。集約した通知の開始時刻からではない。
+    - 通知: 起点 s で閾値以下のときに出た警報を、連続分を 1 通にまとめて数える。
+      1 通が複数の区間に対応することがある。通知区間の対象時刻が一度も超えなかった通知を誤通知とする
+      （一部が外れていても一度的中すれば真の通知）。
     """
     m = pd.concat([ot_origin.rename("s"), y_true.rename("y"), y_pred.rename("p")], axis=1).dropna()
     below_now = m["s"] <= threshold
@@ -84,10 +87,13 @@ def onset_metrics(
         "events_with_onset": n_events_with_onset,
         "events_detected": detected,
         "event_recall": detected / n_events_with_onset if n_events_with_onset else float("nan"),
+        "notices": len(notices),
+        "false_notices": false_notices,
         "notices_per_day": len(notices) / days,
         "false_notices_per_day": false_notices / days,
         "notice_precision": 1 - false_notices / len(notices) if notices else float("nan"),
         "mean_lead_h": float(np.mean(lead_times)) if lead_times else float("nan"),
+        "days": days,
     }
 
 

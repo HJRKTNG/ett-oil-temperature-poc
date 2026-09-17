@@ -89,7 +89,12 @@ def plot_event(start, end, tag):
     ax.plot(w.index + pd.Timedelta(hours=h), w.pred, color="#3f55a8", lw=1.2, label="predicted OT at T (issued 6h earlier)")
     ax.axhline(thr, color="#a33f3f", ls="--", lw=0.9, label=f"threshold {thr:.1f}°C (train 95th pct)")
     al = w[alarm.reindex(w.index).fillna(False)]
-    ax.scatter(al.index + pd.Timedelta(hours=h), al.pred, color="#b9642a", s=22, zorder=5, label="alarm issued (OT[s] ≤ thr, pred > thr)")
+    ax.scatter(al.index + pd.Timedelta(hours=h), al.pred, color="#b9642a", s=22, zorder=5,
+               label="predicted point that triggered an alarm (plotted at target time T)")
+    for s_issue in al.index:
+        ax.axvline(s_issue, color="#b9642a", lw=0.6, alpha=0.5)
+    if len(al):
+        ax.plot([], [], color="#b9642a", lw=0.6, alpha=0.7, label="alarm issue time s (= T − 6h)")
     ax.axvspan(start + pd.Timedelta(hours=h), end + pd.Timedelta(hours=h), color="#a33f3f", alpha=0.08)
     ax.set_ylabel("OT [°C]")
     ax.set_title(f"ETTh2, 6h-ahead alarms — {tag} (event {start + pd.Timedelta(hours=h):%Y-%m-%d %H:%M} → {end + pd.Timedelta(hours=h):%m-%d %H:%M})")
@@ -116,16 +121,19 @@ if succ:
 if fail:
     plot_event(*fail, "missed")
 
-# 4) Error by month / hour (ETTh2, 6h, B vs persistence)
+# 4) Error by target month / hour (ETTh2, 6h): LightGBM vs persistence vs ridge
+stab = pd.read_csv(REP / "results_stability.csv")
+sub = stab[(stab.dataset == "ETTh2") & (stab.horizon_h == 6)]
+fig, axes = plt.subplots(1, 2, figsize=(11, 3.3))
+piv = sub.pivot(index="target_month", columns="model", values="MAE")
+piv.plot(ax=axes[0], marker="o", color={"M1_lgbm(B)": "#3f55a8", "B0_persistence": "#9aa0ad", "B2_ridge(B)": "#5c7a3a"})
+axes[0].set_title("ETTh2, 6h: MAE by target month (test)")
+axes[0].set_xlabel("month of target time T")
+axes[0].set_ylabel("MAE [°C]")
+tmon = (te.index + pd.Timedelta(hours=h)).hour
 err = (te.pred - te.y).abs()
 err_p = (te.ot_now - te.y).abs()
-fig, axes = plt.subplots(1, 2, figsize=(11, 3.3))
-bym = pd.DataFrame({"LightGBM": err.groupby(te.index.month).mean(), "persistence": err_p.groupby(te.index.month).mean()})
-bym.plot(ax=axes[0], marker="o", color=["#3f55a8", "#9aa0ad"])
-axes[0].set_title("ETTh2, 6h: MAE by month (test)")
-axes[0].set_xlabel("month")
-axes[0].set_ylabel("MAE [°C]")
-byh = pd.DataFrame({"LightGBM": err.groupby((te.index + pd.Timedelta(hours=h)).hour).mean(), "persistence": err_p.groupby((te.index + pd.Timedelta(hours=h)).hour).mean()})
+byh = pd.DataFrame({"M1_lgbm(B)": err.groupby(tmon).mean(), "B0_persistence": err_p.groupby(tmon).mean()})
 byh.plot(ax=axes[1], marker=".", color=["#3f55a8", "#9aa0ad"])
 axes[1].set_title("ETTh2, 6h: MAE by target hour of day (test)")
 axes[1].set_xlabel("hour of target time T")
@@ -133,12 +141,13 @@ fig.tight_layout()
 fig.savefig(FIG / "res_error_by_month_hour.png")
 plt.close(fig)
 
-# 5) Feature importance
+# 5) Feature importance (share of gain over ALL features; top 15 shown)
 for name in ["ETTh1", "ETTh2"]:
-    imp = pd.read_csv(REP / "predictions" / f"{name}_h6_B_importance.csv", index_col=0).iloc[:, 0].head(15)[::-1]
+    full = pd.read_csv(REP / "predictions" / f"{name}_h6_B_importance.csv", index_col=0).iloc[:, 0]
+    imp = (full / full.sum()).head(15)[::-1]
     fig, ax = plt.subplots(figsize=(6.5, 4))
-    ax.barh(imp.index, imp.values / imp.values.sum(), color="#3f55a8")
-    ax.set_xlabel("share of total gain")
+    ax.barh(imp.index, imp.values, color="#3f55a8")
+    ax.set_xlabel("share of total gain (all features)")
     ax.set_title(f"{name}, 6h ahead (cond. B): top-15 features by gain")
     fig.tight_layout()
     fig.savefig(FIG / f"res_importance_{name}_h6.png")
