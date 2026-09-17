@@ -17,6 +17,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+
+def _r2(v: float) -> str:
+    """四捨五入で小数 2 桁（数表の 3 桁値 4.435 を 4.44 と表示する）。"""
+    from decimal import Decimal, ROUND_HALF_UP
+    return str(Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
 ROOT = Path(__file__).resolve().parents[1]
 REP = ROOT / "reports"
 FIG = REP / "figures"
@@ -39,7 +45,7 @@ for ax, name in zip(axes, ["ETTh1", "ETTh2"]):
         vals = [sub[(sub.model == m) & (sub.horizon_h == h)].MAE.values[0] for h in hs]
         ax.bar(np.arange(len(hs)) + i * w - 0.4 + w / 2, vals, w, label=m, color=C[m])
         for x, v in zip(np.arange(len(hs)) + i * w - 0.4 + w / 2, vals):
-            ax.text(x, v + 0.03, f"{v:.2f}", ha="center", va="bottom", fontsize=7)
+            ax.text(x, v + 0.03, _r2(v), ha="center", va="bottom", fontsize=7)
     ax.set_xticks(range(len(hs)))
     ax.set_xticklabels([f"{h}h ahead" for h in hs])
     ax.set_ylabel("MAE [°C] (test period)")
