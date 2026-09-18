@@ -55,8 +55,10 @@ Python 3.12 / pandas / scikit-learn / LightGBM 4.7。乱数シードは固定。
 ```
 data/            ETTh1, ETTh2, ETTm1, ETTm2（公開データ。出典: zhouhaoyi/ETDataset）
 src/ett_poc/     data.py（読込・分割）, features.py, evaluate.py, models.py
-scripts/         run_eda.py, run_baselines.py, run_lgbm.py, make_figures.py
-reports/         数表（自動生成）・図・スライド
+scripts/         run_eda.py, run_baselines.py, run_lgbm.py, make_figures.py,
+                 export_slide_data.py（スライド用の数値）, build_slides.js（スライド生成）,
+                 dump_slide_text.py（スライドの文章の控え docs/slides_text.md を書き出す）
+reports/         数表（自動生成）・図・スライド（slides/）・スライド用の数値（slide_data.json）
 docs/            スライドの骨子（slides_outline.md）と文章の控え（slides_text.md）
 ```
 
@@ -70,4 +72,9 @@ docs/            スライドの骨子（slides_outline.md）と文章の控え�
 ## 出典
 
 - Zhou, H. et al. "Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting" (AAAI 2021). データ: https://github.com/zhouhaoyi/ETDataset
+- データのライセンス: ETDataset は CC BY-ND 4.0（https://creativecommons.org/licenses/by-nd/4.0/ ）。`data/` の 4 ファイルは課題で配布されたものを、手を加えずに同梱している。
 - LightGBM: Ke, G. et al. (NeurIPS 2017)
+
+## AI の利用について
+
+実装・図・スライドの作成には AI（Claude、Codex）を使いました。課題の解釈、評価の設計、結論は自分で確認して判断しています。

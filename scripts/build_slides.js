@@ -1,5 +1,10 @@
-/* 報告スライドを生成する。文章は docs/slides_text.md（v2）と同期させること。
- * 使い方: NODE_PATH=<pptxgenjs のある node_modules> node scripts/build_slides.js
+/* 報告スライド（v3）を生成する。文章の控え docs/slides_text.md は、生成後に scripts/dump_slide_text.py で PPTX から書き出す。
+ * 数値は reports/slide_data.json（scripts/export_slide_data.py が作る）からだけ読む。
+ * デザインの決まり: 白背景（表紙と結論だけ紺）・Arial・色は紺/青/橙の 3 色まで・
+ * タイトルは言いたいことを 1 文で・結果のページは図 1 つで左に図、右に解釈・注目点は図に直接書く。
+ * 使い方: uv run python scripts/export_slide_data.py
+ *        NODE_PATH=<pptxgenjs のある node_modules> node scripts/build_slides.js
+ *        uv run --with python-pptx python scripts/dump_slide_text.py
  * 出力:   reports/slides/ett_oil_temperature_poc.pptx
  */
 const path = require("path");
@@ -7,336 +12,533 @@ const fs = require("fs");
 const pptxgen = require("pptxgenjs");
 
 const ROOT = path.resolve(__dirname, "..");
-const FIG = path.join(ROOT, "reports", "figures");
 const OUT_DIR = path.join(ROOT, "reports", "slides");
 fs.mkdirSync(OUT_DIR, { recursive: true });
+const D = JSON.parse(fs.readFileSync(path.join(ROOT, "reports", "slide_data.json"), "utf8"));
 
-// palette（図と同じ系統）
-const INK = "1B1E26", INK2 = "4A4F5C", MUTED = "7C8291", RULE = "D9DCE3", BG = "FFFFFF";
-const NAVY = "3F55A8", NAVY_S = "E3E7F5", ORANGE = "B9642A", ORANGE_S = "F5E6DA", GREEN = "2F7D4F", RED = "A33F3F";
+// 色は 3 色まで: 紺 = 見出しと主張、青 = 注目する系列、橙 = 閾値と警報。ほかは無彩色。
+const NAVY = "1F4E79", BLUE = "2E75B6", ORANGE = "C55A11";
+const INK = "262626", BODY = "3A3A3A", MUTED = "6E6E6E", GRAY = "A6A6A6", LIGHT = "D9D9D9", WHITE = "FFFFFF", TINT = "C9D8EA";
 const FONT = "Arial";
 
 const pres = new pptxgen();
-pres.layout = "LAYOUT_WIDE"; // 13.33 x 7.5 in
+pres.layout = "LAYOUT_16x9"; // 10 x 5.625 in
 pres.author = "Kutsunugi Hijiri";
 pres.title = "変圧器油温の先読み PoC";
-const W = 13.33, H = 7.5, M = 0.6;
-let pageNo = 0;
+const W = 10, H = 5.625, M = 0.5, CW = W - 2 * M;
+let page = 0;
 
-// ---------- helpers
-function base(opts = {}) {
+const f2 = (v) => Number(v).toFixed(2);
+const f1 = (v) => Number(v).toFixed(1);
+const cut = (a, b) => Math.round((1 - b / a) * 100); // a から b への減少率（%）
+const mae = D.mae, raw = D.mae_raw, det = D.detection_ETTh2_h6, thr2 = D.thresholds.ETTh2.q95, thr1 = D.thresholds.ETTh1.q95;
+const lg = det.lgbm;
+
+// ---------- 共通部品
+function slide({ dark = false } = {}) {
   const s = pres.addSlide();
-  s.background = { color: opts.dark ? "1B2447" : BG };
-  pageNo += 1;
-  const fc = opts.dark ? "9AA6D6" : MUTED;
-  s.addText(String(pageNo), { x: W - M - 0.6, y: H - 0.45, w: 0.6, h: 0.3, fontFace: FONT, fontSize: 10, color: fc, align: "right", margin: 0, isTextBox: true });
-  s.addText("ETT 油温予測 PoC", { x: M, y: H - 0.45, w: 4, h: 0.3, fontFace: FONT, fontSize: 9, color: fc, margin: 0, isTextBox: true });
+  s.background = { color: dark ? NAVY : WHITE };
+  page += 1;
+  s.addText(String(page), { x: W - M - 0.6, y: H - 0.4, w: 0.6, h: 0.24, fontFace: FONT, fontSize: 10, color: dark ? TINT : MUTED, align: "right", valign: "bottom", margin: 0, isTextBox: true });
   return s;
 }
-function kicker(s, text) {
-  s.addText(text, { x: M, y: 0.18, w: W - 2 * M, h: 0.28, fontFace: FONT, fontSize: 10, color: NAVY, bold: true, charSpacing: 2, margin: 0, isTextBox: true });
+function title(s, text, { color = NAVY, size = 24, y = 0.32, h = 0.95 } = {}) {
+  s.addText(text, { x: M, y, w: CW, h, fontFace: FONT, fontSize: size, bold: true, color, valign: "top", margin: 0, isTextBox: true, lineSpacingMultiple: 1.08 });
 }
-function message(s, text, opts = {}) {
-  s.addText(text, { x: M, y: 0.45, w: W - 2 * M, h: 1.15, fontFace: FONT, fontSize: opts.size || 19, bold: true, color: INK, valign: "top", margin: 0, isTextBox: true, lineSpacingMultiple: 1.15 });
+function appendixLabel(s, text) {
+  s.addText(text, { x: M, y: 0.14, w: CW, h: 0.26, fontFace: FONT, fontSize: 12, italic: true, color: MUTED, margin: 0, isTextBox: true });
 }
-function bullets(s, items, x, y, w, h, opts = {}) {
-  const arr = items.map((t, i) => {
-    const last = i === items.length - 1;
-    if (typeof t === "string") return { text: t, options: { bullet: { indent: 12 }, breakLine: !last, paraSpaceAfter: opts.gap || 6 } };
-    return { text: t.text, options: Object.assign({ bullet: t.head ? false : { indent: 12 }, bold: !!t.head, color: t.head ? INK : INK2, breakLine: !last, paraSpaceAfter: t.head ? 3 : (opts.gap || 6) }, t.options || {}) };
+// 項目の中の "\n" は、同じ箇条書きの中での改行（語の途中で折り返さないよう、改行位置を自分で決める）
+function bullets(s, items, { x = M, y = 1.5, w = CW, h = 3.3, size = 20, gap = 12, color = BODY } = {}) {
+  const runs = [];
+  items.forEach((t, i) => {
+    const parts = String(t).split("\n");
+    parts.forEach((part, j) => {
+      // 続きの行は、見えない行頭記号（ノーブレークスペース）の段落にして字下げをそろえる
+      const bullet = j === 0 ? { indent: Math.round(size * 0.9) } : { indent: Math.round(size * 0.9), characterCode: "00A0" };
+      const o = { bullet, paraSpaceAfter: j === parts.length - 1 ? gap : 0 };
+      if (!(i === items.length - 1 && j === parts.length - 1)) o.breakLine = true;
+      runs.push({ text: part, options: o });
+    });
   });
-  s.addText(arr, { x, y, w, h, fontFace: FONT, fontSize: opts.size || 13, color: INK2, valign: "top", margin: 0, isTextBox: true, lineSpacingMultiple: 1.12 });
+  s.addText(runs, { x, y, w, h, fontFace: FONT, fontSize: size, color, valign: "top", margin: 0, isTextBox: true, lineSpacingMultiple: 1.08 });
 }
-function label(s, text, x, y, w, opts = {}) {
-  s.addText(text, { x, y, w, h: 0.3, fontFace: FONT, fontSize: opts.size || 11, bold: true, color: opts.color || MUTED, charSpacing: 1.5, margin: 0, isTextBox: true });
+function text(s, t, x, y, w, h, { size = 14, color = BODY, bold = false, align = "left", valign = "top", italic = false } = {}) {
+  s.addText(t, { x, y, w, h, fontFace: FONT, fontSize: size, color, bold, italic, align, valign, margin: 0, isTextBox: true, lineSpacingMultiple: 1.08 });
 }
-function para(s, text, x, y, w, h, opts = {}) {
-  s.addText(text, { x, y, w, h, fontFace: FONT, fontSize: opts.size || 12.5, color: opts.color || INK2, valign: "top", margin: 0, isTextBox: true, lineSpacingMultiple: 1.15 });
+function note(s, t, { dark = false } = {}) {
+  s.addText(t, { x: M, y: H - 0.72, w: CW - 0.8, h: 0.5, fontFace: FONT, fontSize: 11, color: dark ? TINT : MUTED, valign: "bottom", margin: 0, isTextBox: true, lineSpacingMultiple: 1.05 });
 }
-function caption(s, text, x, y, w, h = 0.3) {
-  s.addText(text, { x, y, w, h, fontFace: FONT, fontSize: 9.5, color: MUTED, margin: 0, isTextBox: true, valign: "top" });
+function hline(s, x, y, w, color = LIGHT, pt = 0.75) {
+  s.addShape(pres.shapes.LINE, { x, y, w, h: 0, line: { color, width: pt } });
 }
-function img(s, file, x, y, w, h) {
-  s.addImage({ path: path.join(FIG, file), x, y, w, h, sizing: { type: "contain", w, h } });
-}
-function table(s, rows, x, y, w, colW, opts = {}) {
-  const size = opts.size || 11;
-  const data = rows.map((r, ri) => r.map((c) => {
-    const isHead = ri === 0;
-    const obj = typeof c === "object" && c !== null;
-    const text = obj ? c.text : String(c);
-    const o = { fontFace: FONT, fontSize: size, color: isHead ? INK : INK2, bold: isHead || (obj && !!c.bold), fill: { color: isHead ? "F0F1F4" : BG }, align: "left", valign: "middle", margin: [3, 5, 3, 5], border: [{ type: "none" }, { type: "none" }, { pt: 0.75, color: RULE }, { type: "none" }] };
-    return { text, options: o };
+// 罫線だけの表（縦線なし・塗りなし）。rows[0] を見出し行にするかは head で指定。
+function table(s, rows, { x = M, y = 1.5, w = CW, colW, size = 16, head = true, rowH = 0.5, bold = [] } = {}) {
+  const data = rows.map((r, ri) => r.map((c, ci) => {
+    const isHead = head && ri === 0;
+    return {
+      text: String(c),
+      options: {
+        fontFace: FONT, fontSize: isHead ? size - 3 : size, color: isHead ? MUTED : (bold.includes(ci) ? NAVY : BODY), bold: !isHead && bold.includes(ci),
+        align: "left", valign: "middle", margin: [4, 6, 4, 0],
+        border: [{ type: "none" }, { type: "none" }, { pt: 0.75, color: LIGHT }, { type: "none" }],
+      },
+    };
   }));
-  s.addTable(data, { x, y, w, colW, rowH: opts.rowH || 0.34, autoPage: false });
-}
-function box(s, x, y, w, h, fill) {
-  s.addShape(pres.ShapeType.roundRect, { x, y, w, h, fill: { color: fill }, line: { color: fill, width: 0 }, rectRadius: 0.06 });
-}
-function circleNum(s, n, x, y, d, color) {
-  s.addShape(pres.ShapeType.ellipse, { x, y, w: d, h: d, fill: { color }, line: { color, width: 0 } });
-  s.addText(String(n), { x, y, w: d, h: d, fontFace: FONT, fontSize: 13, bold: true, color: "FFFFFF", align: "center", valign: "middle", margin: 0, isTextBox: true });
+  s.addTable(data, { x, y, w, colW, rowH, autoPage: false });
 }
 
-// ============================================================ 表紙
-{
-  const s = base({ dark: true });
-  s.addText("変圧器油温の先読み PoC", { x: M, y: 2.2, w: W - 2 * M, h: 1.0, fontFace: FONT, fontSize: 36, bold: true, color: "FFFFFF", margin: 0, isTextBox: true });
-  s.addText("予防保全に向けた技術検証 — ETT 公開データによる検証結果", { x: M, y: 3.2, w: W - 2 * M, h: 0.6, fontFace: FONT, fontSize: 18, color: "CFD6EE", margin: 0, isTextBox: true });
-  s.addText("2026 年 9 月　沓脱 聖", { x: M, y: 5.6, w: W - 2 * M, h: 0.4, fontFace: FONT, fontSize: 13, color: "CFD6EE", margin: 0, isTextBox: true });
-  s.addText("対象: 変圧器 2 台（設備 1 = ETTh1、設備 2 = ETTh2）・2016-07〜2018-06・1 時間ごとの負荷 6 種と油温 OT ／ 主結果はテスト期間 2017-11-01〜2018-06-26（約 8 か月）、予測起点までの観測だけを使う条件で算出", { x: M, y: 5.95, w: W - 2 * M, h: 0.7, fontFace: FONT, fontSize: 10.5, color: "9AA6D6", margin: 0, isTextBox: true });
+// ---------- グラフ（描画領域を固定し、注記の位置を値から計算する）
+function plot(ch) { return { x: ch.x + ch.layout.x * ch.w, y: ch.y + ch.layout.y * ch.h, w: ch.layout.w * ch.w, h: ch.layout.h * ch.h }; }
+function yOf(ch, v) { const p = plot(ch); return p.y + p.h * (1 - (v - ch.min) / (ch.max - ch.min)); }
+function xOf(ch, i) { const p = plot(ch); return p.x + p.w * (i + 0.5) / ch.labels.length; }
+function barChart(s, ch) {
+  ch.min = ch.min || 0;
+  s.addChart(pres.charts.BAR, [{ name: ch.name || "value", labels: ch.labels, values: ch.values }], {
+    x: ch.x, y: ch.y, w: ch.w, h: ch.h, barDir: "col", chartColors: ch.colors, barGapWidthPct: ch.gap || 80,
+    valAxisMinVal: ch.min, valAxisMaxVal: ch.max, valAxisHidden: true, valGridLine: { style: "none" },
+    catAxisLabelFontFace: FONT, catAxisLabelFontSize: ch.catSize || 13, catAxisLabelColor: BODY, catAxisLineShow: true, catAxisLineColor: GRAY,
+    showValue: true, dataLabelPosition: "outEnd", dataLabelFontFace: FONT, dataLabelFontSize: ch.valSize || 16, dataLabelFontBold: true, dataLabelColor: INK, dataLabelFormatCode: ch.fmt || "0.00",
+    showLegend: false, layout: ch.layout,
+  });
+  return ch;
+}
+function lineChart(s, ch) {
+  s.addChart(pres.charts.LINE, ch.series.map((se) => ({ name: se.name, labels: ch.labels, values: se.values })), {
+    x: ch.x, y: ch.y, w: ch.w, h: ch.h, chartColors: ch.series.map((se) => se.color), lineSize: ch.lineSize || 2.25, lineDataSymbol: "none",
+    valAxisMinVal: ch.min, valAxisMaxVal: ch.max, valAxisMajorUnit: ch.step, valAxisLabelFontFace: FONT, valAxisLabelFontSize: 12, valAxisLabelColor: MUTED, valAxisLabelFormatCode: "0", valAxisLineShow: false,
+    valGridLine: { color: "EBEBEB", size: 0.75 }, catGridLine: { style: "none" },
+    catAxisLabelPos: "none", catAxisMajorTickMark: "none", catAxisLineColor: GRAY,
+    showLegend: false, layout: ch.layout,
+  });
+  // 横軸の目盛りの数字は自前で描く（LibreOffice は間引いた目盛りの数字を半マスずらして描くため）
+  const p = plot(ch), step = ch.freq || 1;
+  ch.labels.forEach((lb, i) => {
+    if (i % step) return;
+    text(s, lb, xOf(ch, i) - 0.3, p.y + p.h + 0.05, 0.6, 0.22, { size: 12, color: MUTED, align: "center" });
+  });
+  return ch;
+}
+// 系列の右端に名前を書く（凡例の代わり）。重なるときは縦にずらす。
+function endLabels(s, ch, items, { w = 1.5, size = 13, minGap = 0.26 } = {}) {
+  const p = plot(ch);
+  const pos = items.map((it) => ({ ...it, y: yOf(ch, it.value) })).sort((a, b) => a.y - b.y);
+  for (let i = 1; i < pos.length; i++) if (pos[i].y - pos[i - 1].y < minGap) pos[i].y = pos[i - 1].y + minGap;
+  pos.forEach((it) => text(s, it.text, p.x + p.w + 0.08, it.y - 0.13, w, 0.26, { size, color: it.color, bold: !!it.bold, valign: "middle" }));
 }
 
-// ============================================================ 1 結論
+// ========== 表紙
 {
-  const s = base();
-  kicker(s, "結論");
-  message(s, "設備 2 の 6 時間先予測は、最良ベースラインより平均絶対誤差（MAE）を 18% 改善した。現場実証の候補とするが、設備 1 への有効性と保全効果は未確認である。");
+  const s = slide({ dark: true });
+  text(s, "変圧器の油温を6時間先まで予測し、\n高温になる前に知らせられるか", M, 1.3, 8.8, 1.5, { size: 30, color: WHITE, bold: true });
+  text(s, "ETT公開データを使った油温予測の検証報告", M, 2.95, 8.8, 0.4, { size: 16, color: TINT });
+  text(s, "沓脱 聖　｜　2026年9月", M, 3.5, 8.8, 0.35, { size: 15, color: TINT });
+}
+
+// ========== 1. 要旨
+{
+  const s = slide();
+  const d = det.lgbm, r6 = raw.ETTh2["6"];
+  title(s, `設備2では6時間先の誤差を${cut(r6.ridge, r6.lgbm)}%減らし、\n高温${d.events}区間中${d.detected}区間を事前に検知した`);
   table(s, [
-    ["設備", "6 時間先の MAE（条件 B）", "最良ベースライン比", "高温の事前検知（閾値 = 学習期間の 95 パーセンタイル）"],
-    [{ text: "設備 2（ETTh2）", bold: true }, { text: "1.95 ℃", bold: true }, "−18%（リッジ回帰 2.37 ℃）／持続予測比 −56%（4.44 ℃）", "高温 13 区間中 10 区間に事前の的中予測（77%）。通知 12 件・誤通知 3 件（約 8 か月）。検知した区間の先行時間は平均 4.0 時間"],
-    [{ text: "設備 1（ETTh1）", bold: true }, "1.11 ℃", "−4%（持続予測 1.15 ℃）", "テスト期間に閾値超えなし → 評価保留"],
-  ], M, 1.85, W - 2 * M, [1.9, 2.0, 3.5, 4.73], { size: 11.5, rowH: 0.55 });
-  const yb = 3.95;
-  box(s, M, yb, 5.85, 2.6, "EEF5F0");
-  box(s, M + 6.28, yb, 5.85, 2.6, "F5EEEC");
-  label(s, "示せたこと", M + 0.25, yb + 0.15, 5.3, { color: GREEN });
-  bullets(s, ["6 時間先の精度改善（設備 2 で最良ベースライン比 −18%、持続予測比 −56%）", "少ない通知数（約 8 か月で 12 件）での高温の事前検知（設備 2）", "効いている情報の特定: 油温の履歴と、対象時刻の時刻・季節"], M + 0.25, yb + 0.55, 5.35, 2.0, { size: 12.5 });
-  label(s, "まだ示せないこと", M + 6.53, yb + 0.15, 5.3, { color: RED });
-  bullets(s, ["保全効果そのもの（故障・点検・介入の記録がない）", "未学習の設備への汎化（検証は 2 台）と、設備 1 での有効性", "24 時間先の明確な改善、危険温度での検知（閾値は相対的高温の代理）"], M + 6.53, yb + 0.55, 5.35, 2.0, { size: 12.5 });
+    ["精度", `6時間先のMAEは${f2(mae.ETTh2["6"].lgbm)}℃（最良の比較手法は${f2(mae.ETTh2["6"].ridge)}℃）`],
+    ["事前検知", `平均${f1(d.lead_h)}時間前に検知。通知${d.notices}件のうち誤通知は${d.false_notices}件`],
+    ["限界", "24時間先と設備1は改善が小さく、短い高温は見逃す"],
+  ], { y: 1.55, colW: [1.7, 7.3], size: 17, rowH: 0.6, head: false, bold: [0] });
+  text(s, "提案：現場へ通知せずに試行し、通知候補の数と外れた数を確かめる", M, 3.65, CW, 0.4, { size: 18, color: NAVY, bold: true });
+  note(s, "設備2（ETTh2）・テスト期間 2017年11月〜2018年6月・主な評価（予測時点までの観測だけを使う）の条件。区間と通知は別の数え方（定義は付録D）");
 }
 
-// ============================================================ 2 依頼と問い
+// ========== 2. 背景
 {
-  const s = base();
-  kicker(s, "依頼と問い");
-  message(s, "今回判断するのは、故障削減ではなく「油温の先読み精度」と「高温前の通知可能性」である。依頼を、数字で答えられる 3 つの問いに置き換えて検証した。");
-  box(s, M, 1.85, 3.7, 4.7, "F0F1F4");
-  label(s, "想定する利用場面", M + 0.25, 2.0, 3.2);
-  bullets(s, ["実測値の閾値監視に先読みを加え、高温になる前の確認・対応を支援する", "負荷変動・外部要因で温度変動が複雑な設備を対象にする"], M + 0.25, 2.4, 3.2, 1.7, { size: 12 });
-  label(s, "データ", M + 0.25, 4.15, 3.2);
-  bullets(s, ["変圧器 2 台 × 2 年（2016-07〜2018-06）", "1 時間ごとの負荷 6 種＋油温 OT", "欠損・重複なし（ETT 公開ベンチマーク）"], M + 0.25, 4.55, 3.2, 1.9, { size: 12 });
-  const qs = [
-    ["問い 1", "何時間先を、どの精度で当てられるか", "指標: MAE。持続予測・季節ナイーブ・リッジ回帰の中で最良のものとの差"],
-    ["問い 2", "高温になる前に知らせられるか", "指標: 高温区間の検知率、通知数／日（期間平均）、先行時間"],
-    ["問い 3", "どこで外れ、何が効いているか", "指標: 対象月・時刻別の誤差、特徴量群ごとの追加効果"],
+  const s = slide();
+  title(s, "超えてから気づく閾値監視から、\n超える前に手を打てる予防保全へ移りたい");
+  bullets(s, [
+    "油温は、設備の劣化や事故のリスクと密接に関係する",
+    "これまでは経験則にもとづく閾値監視が中心だった",
+    "負荷の変動や外部要因で、温度の動きが複雑になっている",
+  ], { y: 1.75, w: 8.4, size: 22, gap: 22 });
+  note(s, "ご相談時に伺った背景より");
+}
+
+// ========== 3. 問い
+{
+  const s = slide();
+  title(s, "問いは、予測の精度・高温の事前検知・\n外れる理由の3つに絞った");
+  table(s, [
+    ["問い", "測るもの", "事前に決めた目標"],
+    ["予測の精度", "平均絶対誤差（MAE）", "最良の比較手法より\nMAEで10%以上改善"],
+    ["高温の事前検知", "検知率・通知数・先行時間", "通知が平均1日1件以下で\n検知率50%以上"],
+    ["外れる理由と効く情報", "誤差の傾向と特徴量の効果", "目標は置かず、改善点を探す"],
+  ], { y: 1.55, colW: [2.5, 3.0, 3.5], size: 16, rowH: 0.62, bold: [0] });
+  note(s, "高温は、学習期間の油温の上位5%で定義した。故障や危険を示す温度ではない");
+}
+
+// ========== 4. データ
+{
+  const s = slide();
+  title(s, "油温は時刻と季節で大きく動き、\n負荷との相関は最大でも0.50だった");
+  const di = D.diurnal_ETTh2;
+  const order = [["JJA", "夏"], ["SON", "秋"], ["MAM", "春"], ["DJF", "冬"]];
+  const ch = lineChart(s, {
+    x: M, y: 1.6, w: 5.3, h: 3.2, labels: di.hours.map((h) => String(h)), freq: 3, min: 5, max: 50, step: 10,
+    series: order.map(([k, n]) => ({ name: n, values: di.series[k], color: k === "SON" ? "7F7F7F" : NAVY })),
+    layout: { x: 0.09, y: 0.04, w: 0.82, h: 0.82 }, lineSize: 2,
+  });
+  endLabels(s, ch, [["JJA", "夏"], ["DJF", "冬"]].map(([k, n]) => ({ text: n, value: di.series[k][23], color: NAVY, bold: true })), { w: 0.4, size: 12 });
+  // 春と秋は右端で重なるので、線が離れている山（${pk}時）の上下に書く
+  const xp = xOf(ch, di.peak_hour.MAM);
+  text(s, "春", xp - 0.2, yOf(ch, di.series.MAM[di.peak_hour.MAM]) - 0.32, 0.4, 0.24, { size: 12, color: NAVY, bold: true, align: "center" });
+  text(s, "秋", xp - 0.2, yOf(ch, di.series.SON[di.peak_hour.SON]) + 0.08, 0.4, 0.24, { size: 12, color: "7F7F7F", bold: true, align: "center" });
+  text(s, "平均油温（℃）", ch.x, ch.y - 0.2, 2, 0.22, { size: 11, color: MUTED });
+  text(s, "時刻", plot(ch).x + plot(ch).w - 0.5, ch.y + ch.h - 0.02, 0.5, 0.22, { size: 11, color: MUTED, align: "right" });
+  const pk = di.peak_hour.MAM;
+  const tr = Object.values(di.trough_hour);
+  text(s, `どの季節も${pk}時ごろが最高、朝${Math.min(...tr)}〜${Math.max(...tr)}時が最低`, plot(ch).x + 0.1, yOf(ch, 50) + 0.02, 4.0, 0.3, { size: 13, color: BLUE, bold: true });
+  bullets(s, [
+    `1日の平均的な振れ幅は、\n季節ごとに${f1(Math.min(...Object.values(di.amplitude)))}〜${f1(Math.max(...Object.values(di.amplitude)))}℃`,
+    "油温の1時間ラグ相関は0.994\n履歴を予測の土台にする",
+    "負荷6種との同時刻の相関は\n最大でも0.50",
+    "時刻と季節を特徴量に入れ、\n負荷の効果は誤差で確かめる",
+  ], { x: 6.35, y: 1.6, w: 3.15, h: 3.2, size: 16, gap: 14 });
+  note(s, "設備2（ETTh2）の全期間 2016年7月〜2018年6月。時刻別の平均を季節ごとに計算。負荷との相関は同時刻の値。データ：Zhou et al. (2021)");
+}
+
+// ========== 5. 予測の設定
+{
+  const s = slide();
+  title(s, "主な評価では、予測時点までの観測だけから\n6時間先の油温を予測した");
+  const y0 = 2.3, x0 = 0.9, xs = 5.2, xT = 7.7, x1 = 9.1;
+  s.addShape(pres.shapes.RECTANGLE, { x: x0, y: y0 - 0.045, w: xs - x0, h: 0.09, fill: { color: NAVY }, line: { color: NAVY, width: 0 } });
+  s.addShape(pres.shapes.RECTANGLE, { x: xs, y: y0 - 0.045, w: x1 - xs, h: 0.09, fill: { color: LIGHT }, line: { color: LIGHT, width: 0 } });
+  text(s, "観測済み（油温と負荷）", x0, y0 - 0.5, xs - x0, 0.32, { size: 15, color: NAVY, bold: true, align: "center" });
+  text(s, "未来（使うのは時刻と季節だけ）", xs, y0 - 0.5, x1 - xs, 0.32, { size: 15, color: MUTED, bold: true, align: "center" });
+  s.addShape(pres.shapes.OVAL, { x: xs - 0.11, y: y0 - 0.11, w: 0.22, h: 0.22, fill: { color: NAVY }, line: { color: WHITE, width: 1.5 } });
+  s.addShape(pres.shapes.OVAL, { x: xT - 0.11, y: y0 - 0.11, w: 0.22, h: 0.22, fill: { color: BLUE }, line: { color: WHITE, width: 1.5 } });
+  text(s, "予測時点（現在）", xs - 1.0, y0 + 0.2, 2.0, 0.3, { size: 15, color: INK, bold: true, align: "center" });
+  text(s, "予測先（6時間後）", xT - 1.3, y0 + 0.2, 2.6, 0.3, { size: 15, color: BLUE, bold: true, align: "center" });
+  bullets(s, [
+    "主な評価：予測時点までの油温・負荷と、予測先の時刻・季節を使う",
+    "参考評価：予測先の負荷が事前に分かると仮定した場合も比べる",
+    "1時間先と24時間先の結果は付録Bに載せる",
+  ], { y: 3.15, h: 1.8, size: 18, gap: 10 });
+}
+
+// ========== 6. 評価の設計
+{
+  const s = slide();
+  title(s, "期間を暦で区切り、モデルの選択は検証期間だけで行った");
+  const y = 1.5, h = 0.52, x0 = M, total = 12 + 4 + 7.9, unit = CW / total;
+  const segs = [["学習　12か月", "2016年7月〜2017年6月", 12, NAVY], ["検証　4か月", "2017年7月〜10月", 4, "5B8DC0"], ["テスト　約8か月", "2017年11月〜2018年6月", 7.9, BLUE]];
+  let x = x0;
+  segs.forEach(([t, sub, m, c]) => {
+    const w = unit * m;
+    s.addShape(pres.shapes.RECTANGLE, { x, y, w, h, fill: { color: c }, line: { color: WHITE, width: 1.5 } });
+    text(s, t, x, y, w, h, { size: 14, color: WHITE, bold: true, align: "center", valign: "middle" });
+    text(s, sub, x, y + h + 0.06, w, 0.26, { size: 11, color: MUTED, align: "center" });
+    x += w;
+  });
+  bullets(s, [
+    "LightGBMを、持続予測・前日同時刻の値・リッジ回帰と比べた",
+    "予測時点より後の観測を除いても、\n特徴量が変わらないことを実行のたびに確かめている",
+    "テストの結果を見て、モデルや特徴量を選び直していない",
+  ], { y: 2.6, h: 2.3, size: 18, gap: 12 });
+}
+
+// ========== 7. 結果1 精度
+{
+  const s = slide();
+  const r6 = raw.ETTh2["6"], m6 = mae.ETTh2["6"];
+  title(s, `6時間先の誤差は設備2で${f2(m6.lgbm)}℃、\n最良の比較手法より${cut(r6.ridge, r6.lgbm)}%小さい`);
+  const ch = barChart(s, {
+    x: M, y: 1.4, w: 5.4, h: 3.4, labels: ["持続予測", "前日同時刻", "リッジ回帰", "LightGBM"],
+    values: [m6.persistence, m6.seasonal, m6.ridge, m6.lgbm], colors: [GRAY, GRAY, GRAY, BLUE], max: 5.2,
+    layout: { x: 0.02, y: 0.1, w: 0.96, h: 0.78 },
+  });
+  text(s, "平均絶対誤差（℃）", ch.x, ch.y - 0.05, 2.2, 0.25, { size: 11, color: MUTED });
+  const xL = xOf(ch, 3), yTop = yOf(ch, r6.lgbm);
+  text(s, "リッジ比", xL - 0.55, yTop + 0.1, 1.1, 0.24, { size: 11, color: WHITE, align: "center" });
+  text(s, `−${cut(r6.ridge, r6.lgbm)}%`, xL - 0.55, yTop + 0.32, 1.1, 0.34, { size: 18, color: WHITE, bold: true, align: "center" });
+  const r6b = raw.ETTh1["6"], r1 = mae.ETTh2["1"];
+  bullets(s, [
+    `設備1は、最良の比較手法より\n${cut(r6b.persistence, r6b.lgbm)}%小さいだけ`,
+    `設備2の1時間先は、\n持続予測の${f2(r1.persistence)}℃に対して${f2(r1.lgbm)}℃`,
+    "24時間先は明確な改善なし（付録B）",
+  ], { x: 6.25, y: 1.5, w: 3.25, h: 3.3, size: 16, gap: 14 });
+  note(s, `設備2（ETTh2）・6時間先・テスト期間 2017年11月〜2018年6月（${D.n_test_h6.ETTh2.toLocaleString("en-US")}時点）・主な評価の条件。データ：ETT（Zhou et al., 2021）`);
+}
+
+// ========== 8. 結果2 安定性
+{
+  const s = slide();
+  title(s, "設備2では、テスト期間の8か月すべてで\n持続予測とリッジ回帰より誤差が小さかった");
+  const mo = D.monthly_h6.ETTh2;
+  const labels = mo.months.map((m) => `${Number(m.slice(5))}月`);
+  const ch = lineChart(s, {
+    x: M, y: 1.5, w: 5.2, h: 3.3, labels, min: 0, max: 6, step: 1,
+    series: [{ name: "持続予測", values: mo.persistence, color: GRAY }, { name: "リッジ回帰", values: mo.ridge, color: "7F7F7F" }, { name: "LightGBM", values: mo.lgbm, color: BLUE }],
+    layout: { x: 0.07, y: 0.05, w: 0.74, h: 0.82 },
+  });
+  const last = mo.months.length - 1;
+  endLabels(s, ch, [
+    { text: "持続予測", value: mo.persistence[last], color: GRAY },
+    { text: "リッジ回帰", value: mo.ridge[last], color: "7F7F7F" },
+    { text: "LightGBM", value: mo.lgbm[last], color: BLUE, bold: true },
+  ], { w: 1.1, size: 12 });
+  text(s, "平均絶対誤差（℃）", ch.x, ch.y - 0.2, 2.2, 0.22, { size: 11, color: MUTED });
+  const imp = mo.ridge.map((v, i) => 1 - mo.lgbm[i] / v);
+  const lo = Math.round(Math.min(...imp) * 100), hi = Math.round(Math.max(...imp) * 100);
+  text(s, "8か月すべてで最小", xOf({ ...ch, labels }, 0) - 0.1, yOf(ch, Math.min(...mo.lgbm)) + 0.12, 2.4, 0.28, { size: 13, color: BLUE, bold: true });
+  const wk = D.weekly_win_rate_h6;
+  bullets(s, [
+    `月ごとに見ても、\nリッジ回帰より${lo}〜${hi}%小さい`,
+    `週ごとでも${wk.ETTh2.weeks}週中、\n持続予測より${Math.round(wk.ETTh2.vs_persistence * wk.ETTh2.weeks)}週、\nリッジ回帰より${Math.round(wk.ETTh2.vs_ridge * wk.ETTh2.weeks)}週で小さい`,
+    `設備1が持続予測より\n小さかったのは${wk.ETTh1.weeks}週中${Math.round(wk.ETTh1.vs_persistence * wk.ETTh1.weeks)}週\n週によって優劣が分かれた`,
+  ], { x: 6.4, y: 1.5, w: 3.1, h: 3.3, size: 15, gap: 12 });
+  note(s, "設備2・6時間先・主な評価の条件。月と週は予測先の時刻で区切り、それぞれの平均絶対誤差を比べた。データ：ETT（Zhou et al., 2021）");
+}
+
+// ========== 9. 結果3 何が効いているか
+{
+  const s = slide();
+  title(s, "今回の比較では、負荷より時刻と季節を足したほうが\n誤差が大きく下がった");
+  const ab = D.ablation_h6.ETTh2, ab1 = D.ablation_h6.ETTh1;
+  const keys = ["1_ot_only", "2_+calendar", "3_+load_origin (B)", "4_+load_target (A)"];
+  const ch = barChart(s, {
+    x: M, y: 1.4, w: 5.5, h: 3.4, labels: ["油温の履歴\nだけ", "＋時刻・季節", "＋予測時点\nまでの負荷", "＋予測先の\n実測負荷（参考）"],
+    values: keys.map((k) => ab[k]), colors: [GRAY, BLUE, GRAY, GRAY], max: 3.2, catSize: 12,
+    layout: { x: 0.02, y: 0.1, w: 0.96, h: 0.72 },
+  });
+  text(s, "平均絶対誤差（℃）", ch.x, ch.y - 0.05, 2.2, 0.25, { size: 11, color: MUTED });
+  const xm = (xOf(ch, 0) + xOf(ch, 1)) / 2;
+  text(s, `−${cut(ab[keys[0]], ab[keys[1]])}%`, xm - 0.2, yOf(ch, ab[keys[0]]) + 0.05, 1.2, 0.34, { size: 18, color: BLUE, bold: true, align: "left" });
+  bullets(s, [
+    `設備1でも同じ傾向\n（${f2(ab1[keys[0]])}→${f2(ab1[keys[1]])}℃）`,
+    `予測時点までの負荷を足すと、\n設備1は約${cut(ab1[keys[1]], ab1[keys[2]])}%改善、\n設備2は悪化`,
+    `主な結果の${f2(mae.ETTh2["6"].lgbm)}℃は、\n事前に固定した\n負荷ありの構成`,
+    "負荷なしの構成は、\n別の期間で確かめる",
+  ], { x: 6.3, y: 1.5, w: 3.2, h: 3.4, size: 16, gap: 12 });
+  note(s, "設備2・6時間先・テスト期間。特徴量は左から順に足した。4本目は予測時点では分からない情報を使う参考比較。データ：ETT（Zhou et al., 2021）");
+}
+
+// ========== 10. 結果4 高温の事前検知
+{
+  const s = slide();
+  title(s, `設備2では高温${lg.events}区間のうち${lg.detected}区間を事前に検知し、\n誤通知は${lg.false_notices}件だった`);
+  const ch = barChart(s, {
+    x: M, y: 1.4, w: 5.4, h: 3.4, labels: ["持続予測", "前日同時刻", "リッジ回帰", "LightGBM"],
+    values: [det.persistence.detected, det.seasonal.detected, det.ridge.detected, lg.detected], colors: [GRAY, GRAY, GRAY, BLUE], max: 15, fmt: "0",
+    layout: { x: 0.02, y: 0.1, w: 0.96, h: 0.78 },
+  });
+  text(s, "事前に検知できた高温区間の数", ch.x, ch.y - 0.05, 3.2, 0.25, { size: 11, color: MUTED });
+  const p = plot(ch), yT = yOf(ch, lg.events);
+  s.addShape(pres.shapes.LINE, { x: p.x, y: yT, w: p.w, h: 0, line: { color: ORANGE, width: 1, dashType: "dash" } });
+  text(s, `高温区間は全部で${lg.events}`, p.x + 0.05, yT - 0.3, 2.4, 0.26, { size: 12, color: ORANGE, bold: true });
+  bullets(s, [
+    `通知${lg.notices}件のうち、誤通知は${lg.false_notices}件\n通知と区間は1対1ではない`,
+    `検知した${lg.detected}区間では、\n閾値を超える平均${f1(lg.lead_h)}時間前に\n予測が的中`,
+    "高温区間は5〜6月に集中",
+  ], { x: 6.25, y: 1.5, w: 3.25, h: 3.3, size: 16, gap: 14 });
+  note(s, `設備2・6時間先・閾値${f1(thr2)}℃（学習期間の上位5%）。区間は連続した超過、通知は連続した警報をそれぞれ1件と数える。定義は付録D。データ：ETT（Zhou et al., 2021）`);
+}
+
+// ========== 11. 結果5 事例
+function eventChart(s, ev, { x = M, y = 1.55, w = 6.0, h = 3.25, min = 26, max = 50 } = {}) {
+  const ch = lineChart(s, {
+    x, y, w, h, labels: ev.hours.map((t) => String(Number(t))), freq: 3, min, max, step: 4,
+    series: [{ name: "実測", values: ev.actual, color: INK }, { name: "6時間前の予測", values: ev.pred, color: BLUE }, { name: "閾値", values: ev.hours.map(() => thr2), color: ORANGE }],
+    layout: { x: 0.08, y: 0.05, w: 0.7, h: 0.82 }, lineSize: 2,
+  });
+  const p = plot(ch), n = ev.hours.length, slot = p.w / n;
+  if (ev.exceed_hours.length) {
+    const a = Math.min(...ev.exceed_hours), b = Math.max(...ev.exceed_hours);
+    s.addShape(pres.shapes.RECTANGLE, { x: p.x + slot * a, y: p.y, w: slot * (b - a + 1), h: p.h, fill: { color: ORANGE, transparency: 88 }, line: { color: ORANGE, width: 0, transparency: 100 } });
+  }
+  ev.alarm_hours.forEach((hh) => {
+    const cx = xOf(ch, hh), cy = yOf(ch, ev.pred[hh]);
+    s.addShape(pres.shapes.OVAL, { x: cx - 0.06, y: cy - 0.06, w: 0.12, h: 0.12, fill: { color: ORANGE }, line: { color: WHITE, width: 0.75 } });
+  });
+  endLabels(s, ch, [
+    { text: "実測", value: ev.actual[n - 1], color: INK, bold: true },
+    { text: "6時間前の予測", value: ev.pred[n - 1], color: BLUE, bold: true },
+    { text: `閾値 ${f1(thr2)}℃`, value: thr2, color: ORANGE, bold: true },
+  ], { w: 1.4, size: 11 });
+  text(s, "油温（℃）", ch.x, ch.y - 0.2, 1.5, 0.22, { size: 11, color: MUTED });
+  text(s, "予測先の時刻", p.x + p.w - 1.4, ch.y + ch.h - 0.02, 1.4, 0.22, { size: 11, color: MUTED, align: "right" });
+  return ch;
+}
+{
+  const s = slide();
+  const ev = D.event_detected;
+  const a = Math.min(...ev.exceed_hours), b = Math.max(...ev.exceed_hours), first = Math.min(...ev.alarm_hours);
+  const issued = first - D.horizon_h, lead = a - issued; // 最初の警報を出した時刻と、超過開始までの時間
+  title(s, `閾値を超える${lead}時間前に警報を出せたが、\n${a}〜${first - 1}時の超過は6時間前に予測できなかった`);
+  const ch = eventChart(s, ev, { min: 30, max: 50 });
+  const p = plot(ch), tx = p.x + 0.12, ty = yOf(ch, 49.6), tw = 2.1;
+  text(s, `警報を出した時刻：${issued}時\n予測先：${first}時`, tx, ty, tw, 0.46, { size: 12, color: ORANGE, bold: true });
+  const x1 = tx + tw - 0.05, y1 = ty + 0.2, x2 = xOf(ch, first) - 0.07, y2 = yOf(ch, ev.pred[first]);
+  s.addShape(pres.shapes.LINE, { x: x1, y: Math.min(y1, y2), w: x2 - x1, h: Math.abs(y2 - y1), flipV: y2 < y1, line: { color: ORANGE, width: 0.75 } });
+  text(s, `${a}〜${first - 1}時は\n予測が閾値に届かず`, xOf(ch, a) - 0.05, yOf(ch, ev.pred[a]) + 0.12, 1.4, 0.42, { size: 11, color: BLUE, bold: true });
+  bullets(s, [
+    `超過は${a}〜${b}時の${b - a + 1}時間`,
+    `${issued}時に警報を出した`,
+    `${a}〜${first - 1}時の超過は\n予測できなかった`,
+  ], { x: 6.9, y: 1.5, w: 2.6, h: 3.3, size: 15, gap: 12 });
+  note(s, "設備2・2018年5月15日。横軸は予測先の時刻で、予測はその6時間前に出したもの。橙の点は警報が指す予測先の時刻、橙の帯は実測が閾値を超えた時間。データ：ETT（Zhou et al., 2021）");
+}
+
+// ========== 12. 設計上の判断
+{
+  const s = slide();
+  title(s, "1・6・24時間先ごとに油温の変化量を予測し、\n設計は検証期間で決めた");
+  table(s, [
+    ["判断", "理由"],
+    ["現在から予測先までの油温差を予測", "油温の直接予測より検証誤差が小さい"],
+    ["1・6・24時間先で別々のモデル", "予測値の再入力による誤差の蓄積を避ける"],
+    ["絶対誤差で学習", "評価指標のMAEに合わせる"],
+    ["特徴量と閾値はテスト前に固定", "テスト結果を見た選び直しを防ぐ"],
+  ], { y: 1.5, colW: [4.1, 4.9], size: 17, rowH: 0.62, bold: [0] });
+}
+
+// ========== 13. 限界
+{
+  const s = slide();
+  title(s, "保全効果と、評価していない設備での有効性は、\n今回の検証では確認できていない");
+  bullets(s, [
+    "故障・点検記録がなく、保全効果は未検証",
+    "評価は2台のみ。設備1の改善は小さい",
+    "高温は油温の上位5%で定義。危険温度ではない",
+    "高温区間は5〜6月に集中。通年の検知性能は未検証",
+    "24時間先は、持続予測に対する明確な改善なし",
+  ], { y: 1.55, w: 8.4, size: 20, gap: 12 });
+}
+
+// ========== 14. 結論と次の一手
+{
+  const s = slide({ dark: true });
+  title(s, "まず現場へ通知せずに予測を試し、\n通知候補の数と、そのうち外れた数を確かめる", { color: WHITE });
+  const r6 = raw.ETTh2["6"];
+  s.addText([
+    { text: `設備2は6時間先の誤差を${cut(r6.ridge, r6.lgbm)}%減らし、高温${lg.events}区間中${lg.detected}区間を事前に検知`, options: { bullet: { indent: 16 }, breakLine: true } },
+    { text: "保全効果と、評価していない設備での有効性は未検証", options: { bullet: { indent: 16 } } },
+  ], { x: M, y: 1.5, w: CW, h: 1.3, fontFace: FONT, fontSize: 18, color: WHITE, valign: "top", margin: 0, isTextBox: true, paraSpaceAfter: 12, lineSpacingMultiple: 1.08 });
+  text(s, "試行では、通知候補の数・先行時間・見逃しを記録する\n許容できる誤通知の数は、現場と決める", M, 3.0, CW, 0.7, { size: 16, color: TINT });
+  text(s, "github.com/HJRKTNG/ett-oil-temperature-poc　｜　沓脱 聖", M, 4.75, 7.5, 0.3, { size: 12, color: TINT });
+}
+
+// ========== 15. 参考文献
+{
+  const s = slide();
+  title(s, "参考文献", { size: 24 });
+  table(s, [
+    ["データの出典論文", "Zhou, H. et al. (2021). Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting. AAAI 2021."],
+    ["データの配布元", "ETDataset. https://github.com/zhouhaoyi/ETDataset"],
+    ["利用条件", "CC BY-ND 4.0。配布 CSV は改変せず保存し、特徴量はコードで作成"],
+    ["予測手法", "Ke, G. et al. (2017). LightGBM: A Highly Efficient Gradient Boosting Decision Tree. NeurIPS 2017."],
+  ], { y: 1.2, colW: [1.9, 7.1], size: 14, rowH: 0.62, head: false, bold: [0] });
+}
+
+// ========== 付録A 特徴量とモデル設定
+{
+  const s = slide();
+  appendixLabel(s, "付録A　特徴量とモデル設定");
+  title(s, "主な評価の特徴量は、予測時点までの値と\n予測先の時刻・季節に限った", { size: 22, y: 0.45 });
+  table(s, [
+    ["油温の履歴", "現在値、1・2・3・6・12・24・48・168時間前の値、現在値と1時間前・24時間前との差、6・24・168時間の移動平均・標準偏差・最大・最小"],
+    ["時刻・季節", "予測先の時刻と年内の日（sin・cos）、曜日"],
+    ["負荷6種", "現在値、現在値と1時間前との差、24時間平均\n参考評価のみ：予測先の実測負荷も追加"],
+    ["LightGBM", "絶対誤差（L1）で学習。学習率0.03、最大葉数31、葉ごとの最小データ数50、特徴量と行の抽出率0.8。検証期間の誤差が100回続けて改善しなければ学習を終了"],
+  ], { y: 1.55, colW: [1.8, 7.2], size: 13, rowH: 0.7, head: false, bold: [0] });
+}
+
+// ========== 付録B 全結果
+{
+  const s = slide();
+  appendixLabel(s, "付録B　予測する時間ごとの結果");
+  title(s, "1時間先は設備2で大きく改善し、\n24時間先は持続予測をほぼ上回らなかった", { size: 22, y: 0.45 });
+  const names = [["persistence", "持続予測"], ["seasonal", "前日同時刻"], ["ridge", "リッジ回帰"], ["lgbm", "LightGBM"]];
+  const hs = ["1", "6", "24"];
+  const line = { pt: 0.75, color: LIGHT }, none = { type: "none" };
+  const cell = (t, o = {}) => ({ text: t, options: { fontFace: FONT, fontSize: 13, color: BODY, align: "center", valign: "middle", margin: [3, 2, 3, 2], border: [none, none, line, none], ...o } });
+  const head = (t, o = {}) => cell(t, { fontSize: 11, color: MUTED, ...o });
+  const rows = [
+    [head("平均絶対誤差（℃）\n小さいほど良い", { rowspan: 2, align: "left" }), head("設備1", { colspan: 3, bold: true, color: NAVY }), head("設備2", { colspan: 3, bold: true, color: NAVY })],
+    [...hs.map((h) => head(`${h}時間先`)), ...hs.map((h) => head(`${h}時間先`))],
+    ...names.map(([k, n]) => [
+      cell(n, { align: "left", bold: true, color: NAVY }),
+      ...hs.map((h) => cell(f2(mae.ETTh1[h][k]))),
+      ...hs.map((h) => {
+        const focus = h === "1" && (k === "lgbm" || k === "persistence");
+        return cell(f2(mae.ETTh2[h][k]), focus ? { bold: true, color: k === "lgbm" ? BLUE : INK } : {});
+      }),
+    ]),
   ];
-  qs.forEach((q, i) => {
-    const y = 1.85 + i * 1.6;
-    box(s, M + 4.0, y, W - 2 * M - 4.0, 1.4, NAVY_S);
-    s.addText(q[0], { x: M + 4.25, y: y + 0.2, w: 1.2, h: 0.4, fontFace: FONT, fontSize: 14, bold: true, color: NAVY, margin: 0, isTextBox: true });
-    s.addText(q[1], { x: M + 5.5, y: y + 0.18, w: 6.5, h: 0.5, fontFace: FONT, fontSize: 15, bold: true, color: INK, margin: 0, isTextBox: true });
-    s.addText(q[2], { x: M + 5.5, y: y + 0.7, w: 6.5, h: 0.55, fontFace: FONT, fontSize: 11.5, color: INK2, margin: 0, isTextBox: true });
+  s.addTable(rows, { x: M, y: 1.45, w: 6.3, colW: [1.62, 0.78, 0.78, 0.78, 0.78, 0.78, 0.78], rowH: 0.42, autoPage: false });
+  const r1 = raw.ETTh2["1"];
+  bullets(s, [
+    `設備2の1時間先は、\n${f2(mae.ETTh2["1"].persistence)}℃から${f2(mae.ETTh2["1"].lgbm)}℃へ（−${cut(r1.persistence, r1.lgbm)}%）`,
+    "24時間先のLightGBMは\n持続予測に比べて、\n設備1で悪化、\n設備2でほぼ同じ",
+  ], { x: 7.1, y: 1.55, w: 2.4, h: 3.0, size: 14, gap: 12 });
+  note(s, "テスト期間・主な評価の条件。データ：ETT（Zhou et al., 2021）");
+}
+
+// ========== 付録C 見逃した例
+{
+  const s = slide();
+  const ev = D.event_missed;
+  appendixLabel(s, "付録C　見逃した例");
+  const a = Math.min(...ev.exceed_hours), b = Math.max(...ev.exceed_hours);
+  title(s, `${a}時と${b}時の高温を、6時間前の予測では捉えられなかった`, { size: 22, y: 0.45 });
+  const ch = eventChart(s, ev, { min: 26, max: 50 });
+  [a, b].forEach((hh) => {
+    s.addShape(pres.shapes.OVAL, { x: xOf(ch, hh) - 0.07, y: yOf(ch, ev.pred[hh]) - 0.07, w: 0.14, h: 0.14, fill: { color: WHITE }, line: { color: BLUE, width: 1.5 } });
   });
+  const p = plot(ch);
+  text(s, `${a}〜${b}時の超過`, xOf(ch, a) - 0.6, p.y + 0.03, 1.4, 0.22, { size: 11, color: ORANGE, bold: true, align: "center" });
+  bullets(s, [
+    `超過したのは\n${a}時と${b}時の${ev.exceed_hours.length}時点だけ`,
+    `白丸は、${a - D.horizon_h}時と${b - D.horizon_h}時に出した\n${a}時・${b}時の予測\n（${f1(ev.pred_by_hour[a])}℃・${f1(ev.pred_by_hour[b])}℃）\nどちらも閾値未満`,
+    "次の検証で、\n通知の閾値を下げたときの\n見逃しと誤通知を確かめる",
+  ], { x: 6.9, y: 1.55, w: 2.6, h: 3.3, size: 14, gap: 10 });
+  note(s, "設備2・2018年6月4日。横軸は予測先の時刻。データ：ETT（Zhou et al., 2021）、予測は本PoCのLightGBM");
 }
 
-// ============================================================ 3 前提と成功条件
+// ========== 付録D 高温検知の数え方
 {
-  const s = base();
-  kicker(s, "前提");
-  message(s, "主な予測先は「数時間前に確認・運転調整する」想定で 6 時間先とし、高温の閾値は学習期間の 95 パーセンタイル（上位 5% 点）を代理指標として固定した。");
-  label(s, "先に置いた仮定", M, 1.9, 6);
-  bullets(s, ["設備ごとに別モデル（2 台を混ぜない）", "運用時も油温は毎時観測できる（欠測時の代替推定は対象外）", "データの到着遅延は 0、再学習なし（固定モデルで約 8 か月を評価）", "閾値は設備の危険温度ではなく「相対的高温」の代理。学習期間の 95 パーセンタイル = 設備 1: 35.2 ℃、設備 2: 46.4 ℃", "予測先は 6 時間先を主評価、1 時間先・24 時間先を補助"], M, 2.3, 5.9, 4.2, { size: 13 });
-  box(s, M + 6.4, 1.85, W - 2 * M - 6.4, 4.7, NAVY_S);
-  label(s, "事前に置いた成功条件（6 時間先・条件 B）", M + 6.65, 2.0, 5.5, { color: NAVY });
-  s.addText("最良ベースラインより MAE を 10% 以上改善", { x: M + 6.65, y: 2.5, w: 5.4, h: 0.45, fontFace: FONT, fontSize: 15, bold: true, color: INK, margin: 0, isTextBox: true });
-  s.addText("通知 1 件/日以下（期間平均）で、高温区間の検知率 50% 以上", { x: M + 6.65, y: 3.05, w: 5.4, h: 0.45, fontFace: FONT, fontSize: 15, bold: true, color: INK, margin: 0, isTextBox: true });
-  label(s, "結果", M + 6.65, 3.85, 5.4, { color: NAVY });
-  bullets(s, ["設備 2 は今回のテスト期間で両方を満たした（−18%、通知 0.05 件/日で検知率 77%）", "ただし高温 13 区間は 2018 年 5〜6 月に集中しており、通年運用への適合は未確認", "設備 1 は精度改善が小さく（−4%）、テスト期間に閾値超えが無いため警報は評価不能"], M + 6.65, 4.25, 5.4, 2.2, { size: 12.5 });
-}
-
-// ============================================================ 4 予測の枠組み
-{
-  const s = base();
-  kicker(s, "予測の枠組み");
-  message(s, "予測は起点 s で行い、対象時刻 T = s + h の油温を当てる。「対象時刻の負荷が既知」という条件 A と、起点までの観測だけの条件 B を分けて評価した。");
-  const y0 = 2.95, x0 = M + 0.4, x1 = W - M - 0.4, xs = x0 + (x1 - x0) * 0.58, xT = x0 + (x1 - x0) * 0.86;
-  s.addShape(pres.ShapeType.rect, { x: x0, y: y0 - 0.02, w: xs - x0, h: 0.12, fill: { color: NAVY }, line: { color: NAVY, width: 0 } });
-  s.addShape(pres.ShapeType.rect, { x: xs, y: y0 - 0.02, w: x1 - xs, h: 0.12, fill: { color: RULE }, line: { color: RULE, width: 0 } });
-  s.addText("観測済み（油温・負荷）", { x: x0, y: y0 - 0.55, w: xs - x0, h: 0.4, fontFace: FONT, fontSize: 12, bold: true, color: NAVY, align: "center", margin: 0, isTextBox: true });
-  s.addText("未来（未観測。カレンダーだけは既知）", { x: xs, y: y0 - 0.55, w: x1 - xs, h: 0.4, fontFace: FONT, fontSize: 12, bold: true, color: MUTED, align: "center", margin: 0, isTextBox: true });
-  s.addShape(pres.ShapeType.ellipse, { x: xs - 0.12, y: y0 - 0.08, w: 0.24, h: 0.24, fill: { color: INK }, line: { color: INK, width: 0 } });
-  s.addShape(pres.ShapeType.ellipse, { x: xT - 0.12, y: y0 - 0.08, w: 0.24, h: 0.24, fill: { color: ORANGE }, line: { color: ORANGE, width: 0 } });
-  s.addText("予測起点 s", { x: xs - 1.6, y: y0 + 0.3, w: 3.2, h: 0.35, fontFace: FONT, fontSize: 12, bold: true, color: INK, align: "center", margin: 0, isTextBox: true });
-  s.addText("予測対象時刻 T = s + h（当てる油温 OT[T]）", { x: xT - 2.1, y: y0 + 0.3, w: 4.2, h: 0.35, fontFace: FONT, fontSize: 12, bold: true, color: ORANGE, align: "center", margin: 0, isTextBox: true });
-  s.addText("予測ホライズン h = 1 / 6 / 24 時間", { x: xs, y: y0 + 0.65, w: xT - xs, h: 0.3, fontFace: FONT, fontSize: 10.5, color: MUTED, align: "center", margin: 0, isTextBox: true });
-  const yb = 4.3;
-  box(s, M, yb, 5.95, 2.35, NAVY_S);
-  label(s, "条件 B（運用条件）— 本資料の主結果", M + 0.25, yb + 0.15, 5.5, { color: NAVY });
-  bullets(s, ["起点 s までに観測した油温・負荷と、起点で既知の対象時刻 T のカレンダー（時刻・季節・曜日）を使う", "実運用で毎時できる先読みそのもの", "持続予測 = OT[s]、季節ナイーブ = OT[T − 24h] と比較"], M + 0.25, yb + 0.55, 5.5, 1.75, { size: 12 });
-  box(s, M + 6.18, yb, 5.95, 2.35, ORANGE_S);
-  label(s, "条件 A（課題条件）— 条件付きの参考値", M + 6.43, yb + 0.15, 5.5, { color: ORANGE });
-  bullets(s, ["条件 B ＋ 対象時刻 T の負荷 6 種", "課題ルール「t=T の油温を予測する際には t=T の特徴量を使ってよい」の解釈", "将来の負荷が運転計画で既知、という前提付き。実運用ではその保証がない"], M + 6.43, yb + 0.55, 5.5, 1.75, { size: 12 });
-}
-
-// ============================================================ 5 データ
-{
-  const s = base();
-  kicker(s, "データ");
-  message(s, "油温は滑らかに動き（1 時間自己相関 0.994）、設備 2 は平均的な日内変動が大きい。負荷との相関は弱く、負荷の追加価値は相関ではなく予測誤差の比較で確かめる。");
-  img(s, "eda_ETTh2_diurnal.png", M, 1.85, 6.2, 3.25);
-  caption(s, "設備 2: 季節別の時刻別平均油温（全期間）", M, 5.1, 6.2);
+  const s = slide();
+  appendixLabel(s, "付録D　高温検知の数え方");
+  title(s, "高温の検知は、区間・通知・先行時間を次のように数えた", { size: 22, y: 0.45 });
   table(s, [
-    ["", "設備 1", "設備 2"],
-    ["油温の平均 / 標準偏差", "13.3 / 8.6 ℃", "26.6 / 11.9 ℃"],
-    ["日内振幅（季節別の時刻別平均の最大−最小）", "1.9〜3.1 ℃", "8.1〜11.0 ℃"],
-    ["1 時間で 2 ℃を超えて動く割合", "4.4%", "10.3%"],
-    ["油温の 1h / 24h 自己相関", "0.994 / 0.941", "0.994 / 0.934"],
-    ["負荷 6 種と油温の同時刻相関の最大", "0.22（HULL）", "0.50（MULL）"],
-    ["ラグ相関の最大絶対値（HUFL・MUFL・LUFL、0〜48h）", "0.15", "0.19（ラグ 0）"],
-  ], M + 6.5, 1.9, W - 2 * M - 6.5, [3.4, 1.15, 1.18], { size: 10.5, rowH: 0.4 });
-  bullets(s, ["季節（外気温の代理）と日内周期が支配的 → 対象時刻の時刻・季節を特徴量に入れる価値を検証する", "設備 2 は 6 時間先が最も難しい（持続予測の MAE 4.4 ℃。24 時間先の 3.2 ℃より大きい）", "相関だけでは負荷の追加価値を判断できない → 10 ページのアブレーションで測る（相関図は付録 B）"], M + 6.5, 4.85, W - 2 * M - 6.5, 1.7, { size: 11.5, gap: 4 });
-  caption(s, "注記: EDA は全期間で行った。以後のモデル選択は検証期間だけで行ったが、テスト期間を「完全に未見」とは呼ばない。", M, 5.55, 6.2, 0.5);
+    ["高温区間", "実測が閾値を連続して超えた期間を1区間と数える"],
+    ["検知", "高温区間の中の時刻に対する予測が閾値を超え、\nその予測を出した時点の実測は閾値以下だった"],
+    ["通知", "予測時点で閾値以下のときに出た警報のうち、連続するものを1件と数える"],
+    ["誤通知", "通知にまとめた各警報の予測先の時刻で、\n実測が一度も閾値を超えなかった通知"],
+    ["先行時間", "検知した区間で、最初に的中した予測を出した時点から、\n実際に超えた時刻まで"],
+  ], { y: 1.4, colW: [1.8, 7.2], size: 15, rowH: 0.6, head: false, bold: [0] });
+  note(s, `閾値は学習期間の油温の上位5%で固定（設備2は${f1(thr2)}℃）`);
 }
 
-// ============================================================ 6 評価の設計
+// ========== 付録E 高温の基準を変えた場合
 {
-  const s = base();
-  kicker(s, "評価の設計");
-  message(s, "学習 12 か月・検証 4 か月・テスト約 8 か月を暦で固定し、対象時刻と起点の両方で区切ってリークと境界の問題を防いだ。モデル選択には検証期間だけを使った。");
-  const y0 = 1.95, wtot = W - 2 * M;
-  const segs = [["学習 2016-07-01 〜 2017-06-30（12 か月）", 12, NAVY], ["検証 2017-07 〜 10（4 か月）", 4, GREEN], ["テスト 2017-11-01 〜 2018-06-26（約 8 か月。6 時間先の評価件数 5,702 時点）", 8, ORANGE]];
-  let x = M;
-  segs.forEach(([t, m, c]) => { const w = wtot * m / 24; s.addShape(pres.ShapeType.rect, { x, y: y0, w, h: 0.6, fill: { color: c }, line: { color: BG, width: 1 } }); s.addText(t, { x, y: y0, w, h: 0.6, fontFace: FONT, fontSize: 11, bold: true, color: "FFFFFF", align: "center", valign: "middle", margin: 0, isTextBox: true }); x += w; });
-  bullets(s, [{ text: "行の切り方", head: true }, "学習に使う行: 対象時刻 T が学習終了前（ラベルが検証期間に食い込まない）", "検証・テストの評価行: 対象時刻 T と起点 s の両方がその期間内（各期間の先頭 h 時間は除外）", { text: "リーク防止", head: true }, "起点までの観測から作る特徴量は、未来のデータを切り落としても値が変わらないことをテストで確認", "標準化の平均・標準偏差は学習期間だけで推定。早期終了と、油温差／油温そのものの予測方式の選択には検証期間だけを使う。テスト期間の結果でモデルを再選択しない（EDA は全期間）"], M, 2.85, 6.4, 3.7, { size: 13 });
-  bullets(s, [{ text: "比較する手法（簡単な順）", head: true }, "B0 持続予測 OT[s]", "B1 季節ナイーブ OT[T − 24h]", "B2 リッジ回帰（条件 B の特徴量）", "M1 LightGBM（L1 目的関数。油温差 OT[T] − OT[s] を予測し OT[s] に足し戻す。予測先ごとに別モデル）", { text: "指標", head: true }, "MAE（主）、RMSE、高温区間の検知率、通知数／日、先行時間"], M + 6.8, 2.85, W - 2 * M - 6.8, 3.7, { size: 13 });
-}
-
-// ============================================================ 7 精度
-{
-  const s = base();
-  kicker(s, "結果 1 — 精度");
-  message(s, "6 時間先の MAE は設備 2 で 4.44（持続）→ 2.37（リッジ）→ 1.95 ℃（LightGBM）。設備 1 は 1.15 → 1.11 ℃で、改善は小さい。");
-  img(s, "res_mae_by_horizon.png", M, 1.8, W - 2 * M, 3.0);
+  const s = slide();
+  appendixLabel(s, "付録E　高温の基準を上位10%にした場合");
+  const q = lg.q90, pc = (x) => Math.round(x * 100);
+  title(s, "高温の基準を上位10%に広げても、\n検知率はほぼ変わらなかった", { size: 22, y: 0.45 });
   table(s, [
-    ["MAE ℃: 持続 / リッジ / LightGBM", "1 時間先", "6 時間先", "24 時間先"],
-    ["設備 1（ETTh1）", "0.44 / 0.46 / 0.42", { text: "1.15 / 1.16 / 1.11", bold: true }, "1.63 / 1.93 / 1.80"],
-    ["設備 2（ETTh2）", "0.91 / 0.50 / 0.37", { text: "4.44 / 2.37 / 1.95", bold: true }, "3.19 / 3.26 / 3.17"],
-  ], M, 4.95, 7.4, [3.2, 1.4, 1.4, 1.4], { size: 10.5, rowH: 0.34 });
-  caption(s, "テスト期間・条件 B。季節ナイーブの 6 時間先 MAE は設備 1 で 1.64 ℃、設備 2 で 3.21 ℃。最良ベースラインは設備 1 が持続予測、設備 2 がリッジ回帰。評価件数は各 5,684〜5,707 時点。", M, 6.12, 7.4, 0.5);
-  bullets(s, ["1 時間先: 設備 2 は持続予測比 −59%（0.91 → 0.37）。業務上の価値は 1 時間の猶予で可能な対応に依存する。設備 1 は直前値でほぼ足りる", "24 時間先: 今回比較したモデル・特徴量では、持続予測を明確に上回る改善は確認できなかった（設備 1 は悪化、設備 2 は 3.19 → 3.17）"], M + 7.7, 4.95, W - 2 * M - 7.7, 1.7, { size: 11.5, gap: 4 });
-}
-
-// ============================================================ 8 安定性
-{
-  const s = base();
-  kicker(s, "結果 2 — 安定性");
-  message(s, "設備 2 の 6 時間先の改善は 8 か月すべてで成立した（持続比 28〜64%、リッジ比 3〜28%）。設備 1 は週単位で見ると持続に勝つ週が 54% しかない。");
-  img(s, "res_error_by_month_hour.png", M, 1.8, W - 2 * M, 3.3);
-  bullets(s, ["設備 2: 週単位で 97% の週で持続に、91% の週でリッジに勝つ", "設備 1: 月によって負ける（2018-01 は持続 0.94 ℃に対し 1.26 ℃）。3.7% の改善を安定した効果とは言わない", "対象時刻別: 昼〜午後で持続予測の誤差が大きく 14 時で最大（9.5 ℃）。LightGBM との差も 14 時で最大（3.8 ℃）"], M, 5.25, W - 2 * M, 1.3, { size: 12.5, gap: 4 });
-}
-
-// ============================================================ 9 何が効いているか
-{
-  const s = base();
-  kicker(s, "結果 3 — 何が効いているか");
-  message(s, "油温の履歴に時刻・季節を足すと誤差が大きく下がる（設備 2: 2.68 → 1.83 ℃）。起点までの負荷を足しても設備 1 はわずかな改善、設備 2 は悪化した。");
-  img(s, "res_ablation_h6.png", M, 1.8, 6.4, 2.7);
-  img(s, "res_importance_ETTh2_h6.png", M + 6.7, 1.8, 5.5, 3.35);
-  table(s, [
-    ["6 時間先 MAE ℃（テスト）", "油温の履歴のみ", "＋時刻・季節", "＋起点までの負荷（B）", "＋対象時刻の負荷（A）"],
-    ["設備 1", "1.523", "1.123", "1.108", "1.084"],
-    ["設備 2", "2.676", { text: "1.827", bold: true }, "1.951", "1.968"],
-  ], M, 4.65, 6.4, [1.5, 1.2, 1.1, 1.3, 1.3], { size: 10.5, rowH: 0.34 });
-  bullets(s, ["主結果の 1.95 ℃は事前に固定した全特徴量（条件 B）の値で、最良の構成を検証で選んだものではない", "設備 2 では検証期間でも負荷なし構成が良かった（1.74 vs 1.78 ℃）。次回はこの構成を候補にし、新しい評価期間で警報性能も確認する", "「対象時刻の負荷が既知」という条件 A でも改善は小さい（設備 1 で −2%、設備 2 で悪化）"], M + 6.7, 5.25, 5.5, 1.35, { size: 10.5, gap: 3 });
-}
-
-// ============================================================ 10 事前検知
-{
-  const s = base();
-  kicker(s, "結果 4 — 高温の事前検知");
-  message(s, "設備 2・6 時間先で、高温 13 区間のうち 10 区間に事前の的中予測があり、通知は約 8 か月で 12 件（誤通知 3 件）。検知した区間の先行時間は平均 4.0 時間だった。");
-  table(s, [
-    ["指標（設備 2・6 時間先・条件 B・閾値 46.4 ℃）", "値"],
-    ["閾値を超えた時点数 / 高温区間（連続した超過 = 1 区間）", "65 時点 / 13 区間"],
-    ["事前の的中予測があった区間", { text: "10 / 13（77%）", bold: true }],
-    ["通知数（連続した事前警報 = 1 通知）／うち誤通知", "12 件（0.05 件/日）／ 3 件"],
-    ["先行時間（検知した区間の平均）", { text: "4.0 時間", bold: true }],
-    ["高温状態を時点単位で当てた割合（参考）", "42%（27 / 65）"],
-  ], M, 1.85, 6.6, [4.5, 2.1], { size: 11, rowH: 0.42 });
-  label(s, "警報のベースライン比較（同じ区間・閾値）", M, 4.5, 6.6);
-  table(s, [
-    ["手法", "検知した区間", "通知数／日", "誤通知／日"],
-    ["持続予測", "0 / 13", "0.00", "0.00"],
-    ["季節ナイーブ", "6 / 13", "0.05", "0.02"],
-    ["リッジ回帰", "5 / 13", "0.03", "0.00"],
-    [{ text: "LightGBM", bold: true }, { text: "10 / 13", bold: true }, "0.05", "0.01"],
-  ], M, 4.85, 6.6, [1.9, 1.5, 1.6, 1.6], { size: 10.5, rowH: 0.32 });
-  box(s, M + 7.0, 1.85, W - 2 * M - 7.0, 4.7, "F0F1F4");
-  label(s, "定義と注意", M + 7.25, 2.0, 4.8);
-  bullets(s, ["対象は「起点では閾値以下、対象時刻で超える」区間。連続した実測超過は 1 区間、連続した事前警報は 1 通知に集約", "先行時間は、検知した各区間について「最初の的中予測を出した起点」から「実際の超過開始」までを測る。集約した通知の開始時刻からではない", "的中した通知 9 件と検知した区間 10 件は別の集計単位（1 通知が複数の区間に対応しうる）。誤通知は、発報した起点の 6 時間後の対象時刻で実測が一度も閾値を超えなかった通知", "区間は 2018 年 5〜6 月に集中し、同日の再超過を含む", "設備 1 はテスト期間に超過 0 件のため評価保留。上位 10% 点での補助評価は付録 B"], M + 7.25, 2.4, 4.85, 4.1, { size: 10.5, gap: 4 });
-}
-
-// ============================================================ 11 成功例と失敗例
-{
-  const s = base();
-  kicker(s, "結果 5 — 成功例と失敗例");
-  message(s, "超過開始の 3 時間前に警報を出せた例がある一方、2 時点だけの短い高温区間は予測が閾値に届かず見逃した。");
-  img(s, "res_alarm_timeline_detected.png", M, 1.75, 7.6, 2.35);
-  img(s, "res_alarm_timeline_missed.png", M, 4.2, 7.6, 2.35);
-  bullets(s, [{ text: "成功例（5 月 15 日）", head: true }, "12〜18 時に閾値を超過。最初の的中予測は 9 時起点の 15 時予測で、超過開始の 3 時間前に警報を出せた。ただし 12〜14 時の高温は予測できなかった（6〜8 時起点の予測は 41.5・41.5・46.0 ℃で閾値未満）", { text: "失敗例（6 月 4 日）", head: true }, "14・15 時の 2 時点で超過（実測 46.5・46.9 ℃）。6 時間前の予測は 40.0・42.5 ℃で、どちらも警報を出せなかった", { text: "含意", head: true }, "この例では短い高温区間を過小予測した。通知閾値の引き下げで拾える可能性があるが、検知率と誤通知への影響は別途評価する"], M + 7.9, 1.85, W - 2 * M - 7.9, 4.7, { size: 11, gap: 4 });
-}
-
-// ============================================================ 12 判断と限界
-{
-  const s = base();
-  kicker(s, "設計上の判断と限界");
-  message(s, "予測先ごとの油温差の予測、L1 目的関数、検証期間だけでの選択を採った。24 時間先、未学習設備への汎化、保全効果は今回の範囲では示せない。");
-  box(s, M, 1.85, 5.95, 4.7, NAVY_S);
-  label(s, "判断（理由）", M + 0.25, 2.0, 5.5, { color: NAVY });
-  bullets(s, ["各予測先のモデルで油温差 OT[T] − OT[s] を予測し、現在値 OT[s] に足し戻す — 検証で油温そのものの予測より良かった", "将来予測を次の入力に使う再帰方式は採用しない — 誤差の伝播を避ける", "L1 目的関数 — MAE を主指標にするため。木モデルの外挿の弱さは明記", "特徴量は事前に固定。モデル選択には検証期間を使い、テスト期間の結果で再選択しない", "閾値は学習期間で固定し、区間数を必ず併記"], M + 0.25, 2.4, 5.5, 4.0, { size: 13, gap: 9 });
-  box(s, M + 6.18, 1.85, 5.95, 4.7, "F5EEEC");
-  label(s, "限界", M + 6.43, 2.0, 5.5, { color: RED });
-  bullets(s, ["24 時間先は、今回比較したモデル・特徴量では持続予測を明確に上回る改善を確認できなかった。外気温・気象予報の追加は次に検証する候補", "設備 2 台のみ。未学習設備への汎化は未検証", "高温区間が 5〜6 月に集中し、閾値は相対値。危険温度での検知は未評価", "故障・点検・介入の記録が無く、保全効果は評価できない", "短い高温区間を過小予測した例がある（12 ページ）"], M + 6.43, 2.4, 5.5, 4.0, { size: 13, gap: 9 });
-}
-
-// ============================================================ 13 次の一手
-{
-  const s = base();
-  kicker(s, "現場実証に向けて");
-  message(s, "まず対象設備で 6 時間先予測をシャドー運用し、通知負担と対応可能な先行時間を確認する。24 時間先の改善は別の技術検証として進める。");
-  label(s, "現場実証に必要なもの", M, 1.9, 6);
-  bullets(s, ["対象設備の毎時の油温・負荷（欠測・遅延の実態込み）", "閾値の定義 — 危険温度・運転上限・保全基準のどれか", "警報 → 担当者の確認 → 点検・運転調整、の流れと責任者", "評価に使える記録 — 点検・介入・異常の履歴"], M, 2.3, 5.9, 2.4, { size: 13 });
-  box(s, M, 4.8, 5.9, 1.7, NAVY_S);
-  label(s, "実証前に現場と合意すること", M + 0.25, 4.95, 5.4, { color: NAVY });
-  para(s, "必要な最低先行時間、許容できる誤通知数、見逃し時の扱い、評価期間。", M + 0.25, 5.35, 5.4, 1.0, { size: 13 });
-  const steps = [["1", "6 時間先予測のシャドー運用", "対象設備で通知を出さずに予測を走らせ、通知数・先行時間・誤通知を実データで確認"], ["2", "設備別の再学習と監視", "再学習の頻度、ドリフトの検知、誤差の時系列監視。通知閾値は許容する通知数から調整"], ["3", "外気温・気象予報の追加（別の技術検証）", "24 時間先の改善候補。データ取得の目処と合わせて評価"]];
-  label(s, "技術側の次の一手（優先順）", M + 6.4, 1.9, 6, { color: NAVY });
-  steps.forEach(([n, t, d], i) => {
-    const y = 2.35 + i * 1.4;
-    circleNum(s, n, M + 6.4, y + 0.05, 0.5, NAVY);
-    s.addText(t, { x: M + 7.05, y, w: 5.1, h: 0.4, fontFace: FONT, fontSize: 14, bold: true, color: INK, margin: 0, isTextBox: true });
-    s.addText(d, { x: M + 7.05, y: y + 0.42, w: 5.1, h: 0.8, fontFace: FONT, fontSize: 11.5, color: INK2, margin: 0, isTextBox: true, valign: "top" });
-  });
-}
-
-// ============================================================ 付録 A
-{
-  const s = base();
-  kicker(s, "付録 A");
-  message(s, "特徴量・モデル設定・数表・出典", { size: 18 });
-  bullets(s, [{ text: "A1 特徴量（条件 B。油温・負荷の履歴は予測起点 s 基準、カレンダーは対象時刻 T 基準）", head: true }, "油温: 現在値、ラグ 1/2/3/6/12/24/48/168h、差分 1h/24h、移動平均・標準偏差・最大・最小（窓 6/24/168h）", "カレンダー: 対象時刻 T の時刻・年内日（sin/cos）、曜日", "負荷 6 種: 現在値、1h 差分、24h 平均（条件 A はさらに対象時刻 T の負荷 6 種）", { text: "A2 LightGBM", head: true }, "L1 目的関数、学習率 0.03、葉 31、min_data_in_leaf 50、feature/bagging fraction 0.8、早期終了 100（検証 MAE）、乱数固定", { text: "用語", head: true }, "予測ホライズン h = 起点から対象時刻までの時間。高温区間 = 連続した実測超過。通知 = 連続した事前警報。時点 = 毎時の観測"], M, 1.7, 6.2, 4.8, { size: 11 });
-  bullets(s, [{ text: "A3 数表・コード", head: true }, "reports/results_baselines.md、results_lgbm.md、results_stability.md、results_ablation.csv", "GitHub: github.com/HJRKTNG/ett-oil-temperature-poc（再現手順は README）", { text: "A4 出典", head: true }, "Zhou, H. et al. Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting. AAAI 2021. データ: github.com/zhouhaoyi/ETDataset", "Ke, G. et al. LightGBM: A Highly Efficient Gradient Boosting Decision Tree. NeurIPS 2017"], M + 6.6, 1.7, W - 2 * M - 6.6, 4.8, { size: 11 });
-}
-
-// ============================================================ 付録 B
-{
-  const s = base();
-  kicker(s, "付録 B");
-  message(s, "補助評価: 上位 10% 点での警報性能と、負荷と油温のラグ相関", { size: 18 });
-  label(s, "B1 設備 2・6 時間先・条件 B。閾値 = 学習期間の 90 パーセンタイル（43.1 ℃）vs 95（46.4 ℃）", M, 1.7, 6.4, { size: 10 });
-  table(s, [
-    ["指標", "95 パーセンタイル", "90 パーセンタイル"],
-    ["超過時点 / 高温区間", "65 / 13", "147 / 25"],
-    ["事前の的中予測があった区間", "10 / 13（77%）", "19 / 25（76%）"],
-    ["通知数（／日）", "12（0.05）", "24（0.10）"],
-    ["誤通知", "3", "5"],
-    ["先行時間（平均）", "4.0 時間", "4.6 時間"],
-  ], M, 2.1, 6.2, [2.6, 1.8, 1.8], { size: 10.5, rowH: 0.36 });
-  caption(s, "同じ高温定義で通知閾値だけを下げた比較ではない（高温の定義そのものを変えている）。", M, 4.35, 6.2);
-  img(s, "eda_ETTh2_xcorr.png", M + 6.6, 1.7, 5.5, 2.9);
-  caption(s, "B2 設備 2: 負荷を先行させた油温との相関（HUFL・MUFL・LUFL の 3 種、ラグ 0〜48h、全期間）。最大絶対値は MUFL のラグ 0 で 0.19。同時刻相関が最大の MULL（0.50）はこの図に含まない。", M + 6.6, 4.65, 5.5, 0.8);
+    ["設備2・6時間先", `上位5%（${f1(thr2)}℃）`, `上位10%（${f1(D.thresholds.ETTh2.q90)}℃）`],
+    ["高温区間", `${lg.events}区間`, `${q.events}区間`],
+    ["事前に検知", `${lg.detected}区間（${pc(lg.detected / lg.events)}%）`, `${q.detected}区間（${pc(q.detected / q.events)}%）`],
+    ["通知", `${lg.notices}件`, `${q.notices}件`],
+    ["1日あたりの通知", `${f2(lg.notices_per_day)}件`, `${f2(q.notices_per_day)}件`],
+    ["誤通知", `${lg.false_notices}件`, `${q.false_notices}件`],
+    ["先行時間（平均）", `${f1(lg.lead_h)}時間`, `${f1(q.lead_h)}時間`],
+  ], { y: 1.45, w: 5.9, colW: [2.1, 1.9, 1.9], size: 14, rowH: 0.44, bold: [0] });
+  bullets(s, [
+    `検知率は${pc(lg.detected / lg.events)}%と${pc(q.detected / q.events)}%で\nほぼ同じだが、通知は\n${lg.notices}件から${q.notices}件に増えた`,
+    `誤通知は${lg.false_notices}件から\n${q.false_notices}件に増えた`,
+  ], { x: 6.7, y: 1.55, w: 2.8, h: 3.0, size: 15, gap: 12 });
+  note(s, "実測の高温区間と予測による通知の両方に、各列の閾値を当てた。通知の条件だけを緩めた比較ではない。データ：ETT（Zhou et al., 2021）");
 }
 
 const out = path.join(OUT_DIR, "ett_oil_temperature_poc.pptx");
-pres.writeFile({ fileName: out }).then(() => console.log("written", out, "slides", pageNo));
+pres.writeFile({ fileName: out }).then(() => console.log("written", out, "slides", page));

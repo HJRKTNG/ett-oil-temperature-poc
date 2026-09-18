@@ -6,3 +6,4 @@ __pycache__/
 !reports/**/*.pdf
 README_assignment*
 .DS_Store
+.reviews/
