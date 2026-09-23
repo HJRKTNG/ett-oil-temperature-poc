@@ -159,6 +159,34 @@ def event_window(day: str, thr: float) -> dict:
     }
 
 
+def median_week(ds: str = "ETTh2") -> dict:
+    """テスト期間で、週の誤差が中央値に最も近い 1 週間の実測と予測（設備 2・6 時間先・条件 B）。
+
+    都合のよい週を選ばないよう、168 時点そろった週（月〜日、予測先の時刻で区切る）の MAE の
+    中央値に最も近い週を機械的に選ぶ。
+    """
+    p = pd.read_csv(REPORTS / "predictions" / f"{ds}_h{H}_B.csv", parse_dates=["date"])
+    t = p[p["split"] == "test"].copy()
+    t["T"] = t["date"] + pd.Timedelta(hours=H)  # 起点 s → 対象時刻 T
+    t["err"] = (t["pred"] - t["y"]).abs()
+    t["week"] = t["T"].dt.to_period("W-SUN")
+    g = t.groupby("week")["err"].agg(["size", "mean"])
+    full = g[g["size"] == 7 * 24]
+    med = full["mean"].median()
+    wk = (full["mean"] - med).abs().idxmin()
+    w = t[t["week"] == wk].sort_values("T")
+    return {
+        "start": str(w["T"].iloc[0]),
+        "end": str(w["T"].iloc[-1]),
+        "mae": r(w["err"].mean()),
+        "median_weekly_mae": r(med),
+        "n_full_weeks": int(len(full)),
+        "labels": [f"{ts.month}/{ts.day} {ts.hour:02d}" for ts in w["T"]],
+        "actual": [r(v, 1) for v in w["y"]],
+        "pred": [r(v, 1) for v in w["pred"]],
+    }
+
+
 def main() -> None:
     thr = thresholds_raw()
     data = {
@@ -176,6 +204,7 @@ def main() -> None:
         "diurnal_ETTh2": diurnal("ETTh2"),
         "event_detected": event_window("2018-05-15", thr["ETTh2"][95]),
         "event_missed": event_window("2018-06-04", thr["ETTh2"][95]),
+        "week_median_ETTh2_h6": median_week("ETTh2"),
     }
     out = REPORTS / "slide_data.json"
     out.write_text(json.dumps(data, ensure_ascii=False, indent=1))

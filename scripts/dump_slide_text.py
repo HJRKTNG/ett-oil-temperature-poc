@@ -16,10 +16,10 @@ src = ROOT / "reports" / "slides" / "ett_oil_temperature_poc.pptx"
 out = ROOT / "docs" / "slides_text.md"
 prs = Presentation(src)
 lines = [
-    "# 報告スライドの文章（v3・2026-09-18）",
+    "# 報告スライドの文章（v4・2026-09-23）",
     "",
     "`reports/slides/ett_oil_temperature_poc.pptx` から各ページの文字を書き出したもの（`scripts/build_slides.js` が生成元。数値は `reports/slide_data.json`）。",
-    "v3 は学術・コンサル型の作法（タイトルは言いたいことを 1 文で、結果は 1 枚に図 1 つ、色は 3 色まで、飾りなし）で作り直し、Codex に 1 枚ずつレビューさせて直した（1 巡目 20 枚、2 巡目 21 枚、以降は直したページ）。",
+    "v4 は v3（学術・コンサル型の作法）をもとに文字を減らした版。タイトルを 1 行にし、グラフのページの説明を 1〜2 項目に絞り、背景・評価のやり方・設計の判断・限界・結論・付録 D を図か表に置き換え、予測と実測を重ねた 1 週間の図を足した。要旨・問い・安定性の 3 枚は v3 のまま。",
     "グラフの目盛りや系列名は省いた。グラフの中の数値（棒の値・折れ線）は `reports/slide_data.json` を参照。",
     "",
 ]
